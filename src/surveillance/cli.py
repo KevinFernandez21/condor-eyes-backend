@@ -150,7 +150,7 @@ def predict_split(
 
 
 def cmd_predict(a: argparse.Namespace) -> None:
-    cfg = load_surveillance_config(a.config, model=a.model)
+    cfg = load_surveillance_config(a.config, model=a.model, imgsz=a.imgsz)
     det = SurveillanceDetector(cfg, min_conf=0.001)
     cache = Path(a.cache) / a.tag
     jobs = [(s, None) for s in a.splits] + [("test_mot", p) for p in a.perturb]
@@ -323,10 +323,13 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--cache", default="reports/surveillance/preds")
     s.add_argument(
         "--splits",
-        nargs="+",
+        nargs="*",
         default=["val_coco", "val_mot", *TEST_SPLITS, "negatives"],
     )
     s.add_argument("--perturb", nargs="*", default=["dark", "blur"])
+    s.add_argument(
+        "--imgsz", type=int, help="Sobrescribe el tamaño de entrada de la config"
+    )
     s.set_defaults(func=cmd_predict)
 
     s = sub.add_parser("evaluate", help="Calibra umbrales en val y reporta el held-out")

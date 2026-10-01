@@ -1,5 +1,4 @@
-# Detector general (issue #9). Baseline: YOLOv8n COCO sin reentrenar.
-# `surveillance.py evaluate --write-config` genera versiones con umbrales calibrados.
+# Generado por `surveillance.py evaluate --tag baseline`: umbrales calibrados en val.
 [detector]
 version = "v0-coco-baseline"
 model = "weights/yolov8n.pt"
@@ -8,3 +7,14 @@ device = "0"
 half = true
 iou = 0.6
 default_conf = 0.3
+
+[conf]
+person = 0.175
+bicycle = 0.225
+car = 0.25
+motorcycle = 0.275
+bus = 0.275
+truck = 0.075
+backpack = 0.1
+handbag = 0.075
+suitcase = 0.2

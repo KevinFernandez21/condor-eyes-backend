@@ -208,8 +208,10 @@ def test_load_yolo_gt(tmp_path: Path):
 
 
 def test_repo_config_and_overrides(tmp_path: Path):
-    cfg = load_surveillance_config(ROOT / "configs" / "surveillance.toml")
-    assert cfg.model.endswith(".pt") and cfg.threshold("person") == cfg.default_conf
+    for name, imgsz in (("surveillance.toml", 640), ("surveillance_v1.toml", 1280)):
+        cfg = load_surveillance_config(ROOT / "configs" / name)
+        assert cfg.model.endswith(".pt") and cfg.imgsz == imgsz and cfg.version
+        assert set(cfg.conf) == set(NAMES) and all(0 < t < 1 for t in cfg.conf.values())
     p = tmp_path / "c.toml"
     p.write_text('[detector]\nversion = "v1"\n[conf]\nperson = 0.4\n')
     assert load_surveillance_config(p).threshold("person") == 0.4

@@ -1,0 +1,20 @@
+# Generado por `surveillance.py evaluate --tag baseline_1280` (predict --imgsz 1280): umbrales calibrados en val.
+[detector]
+version = "v1-coco-1280"
+model = "weights/yolov8n.pt"
+imgsz = 1280
+device = "0"
+half = true
+iou = 0.6
+default_conf = 0.3
+
+[conf]
+person = 0.25
+bicycle = 0.225
+car = 0.275
+motorcycle = 0.175
+bus = 0.475
+truck = 0.225
+backpack = 0.2
+handbag = 0.2
+suitcase = 0.25
