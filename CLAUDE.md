@@ -6,7 +6,9 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 Proyecto en Fase 0: videovigilancia multiagente para **Jetson Orin Nano 8GB**, todo en **Python + AgentScope**, objetivo 4-8 streams 1080p con inferencia compartida. Se realizará un **entorno de campo multiagéntico**: el sistema se despliega y opera en campo, en el edge, como un conjunto de agentes AgentScope coordinados. Reemplaza al repo anterior `condor-eye-backend` (ISR para drones); no se reutiliza nada de él.
 
-Lo único implementado es `src/compare/`, el harness de benchmark de detectores. El modelo base ya está decidido: **YOLOv8n** (ARCH-002). Los módulos `src/agents/`, `src/pipeline/` y `src/bus/` descritos en el README y en `docs/architecture.md` **todavía no existen**; son el diseño a seguir al crearlos.
+Lo implementado es `src/compare/` (harness de benchmark de detectores) y `src/firearm/` (prototipo de detección de armas en video grabado, issue #1; ver `docs/firearm-detection.md`). El modelo base ya está decidido: **YOLOv8n** (ARCH-002).
+
+**Máquina de desarrollo actual: laptop x86_64 con RTX 5080 Laptop 16 GB (Windows).** Entrenamiento, inferencia y demos se validan ahí. La validación en la Jetson Orin Nano (export TensorRT `.engine`, pruebas sin OOM) queda diferida; no bloquea el trabajo actual. Los módulos `src/agents/`, `src/pipeline/` y `src/bus/` descritos en el README y en `docs/architecture.md` **todavía no existen**; son el diseño a seguir al crearlos.
 
 ## Entorno y comandos (uv)
 
@@ -18,11 +20,13 @@ uv add <pkg>                 # dependencia nueva (nunca pip install)
 uv add --dev <pkg>           # dependencia de desarrollo
 uv run ruff check src
 uv run mypy src
-uv run pytest                # todavía no hay tests
+uv run pytest                # tests en tests/ (pythonpath=src vía pyproject)
 uv run pytest tests/test_x.py::test_y   # un solo test
 ```
 
-No hay Dockerfile ni pre-commit todavía. Al añadir tests, `FakeDetector` permite probar el harness sin GPU ni pesos.
+No hay Dockerfile ni pre-commit todavía. `FakeDetector` permite probar el harness sin GPU ni pesos.
+
+`torch`/`torchvision` salen del índice CUDA 13.0 de PyTorch en x86_64 (`[tool.uv.sources]`); las RTX serie 50 necesitan CUDA >= 12.8. El CLI del prototipo de armas es `uv run python scripts/firearm.py {prepare-data,train,eval,annotate}`.
 
 En la Orin, JetPack 6 trae Python 3.10 y sus bindings de TensorRT/DeepStream están compilados para 3.10; con el Python 3.11 de uv habrá que conseguir o compilar esos bindings para 3.11.
 
