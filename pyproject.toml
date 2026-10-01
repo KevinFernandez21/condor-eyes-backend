@@ -1,0 +1,15 @@
+[project]
+name = "condor-eye"
+version = "0.1.0"
+requires-python = ">=3.11"
+dependencies = [
+    "agentscope>=2.0.9",
+    "ultralytics>=8.4.123",
+]
+
+[dependency-groups]
+dev = [
+    "mypy>=2.3.1",
+    "pytest>=9.1.1",
+    "ruff>=0.16.9",
+]
