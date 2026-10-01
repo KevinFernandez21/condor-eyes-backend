@@ -10,7 +10,7 @@ from typing import Any
 @dataclass
 class FirearmConfig:
     # .pt entrenado (laptop) o engine TensorRT FP16 (Jetson, a futuro).
-    model: str = "runs/firearm/yolov8n_mgd_usrt/weights/best.pt"
+    model: str = "runs/firearm/yolov8n_simuletic/weights/best.pt"
     conf: float = 0.35
     iou: float = 0.5
     imgsz: int = 640
@@ -19,9 +19,9 @@ class FirearmConfig:
     # FP16 en GPU; se ignora en CPU.
     half: bool = True
     # Clases a conservar por nombre; vacío = todas las del modelo.
-    classes: list[str] = field(default_factory=lambda: ["handgun", "person"])
+    classes: list[str] = field(default_factory=lambda: ["weapon", "person"])
     # Clases que se consideran arma (color de alerta y métricas de positivos).
-    weapon_classes: list[str] = field(default_factory=lambda: ["handgun"])
+    weapon_classes: list[str] = field(default_factory=lambda: ["weapon"])
 
     @property
     def precision(self) -> int | None:

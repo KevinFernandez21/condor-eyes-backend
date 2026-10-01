@@ -152,3 +152,61 @@ def prepare_cctv_gun(
     report["names"] = names
     (Path(out_dir) / "prepare_report.json").write_text(json.dumps(report, indent=2), encoding="utf-8")
     return report
+
+
+def scene_of(stem: str) -> str:
+    """`Scene3_12` → `Scene3`: agrupa los frames de una misma escena."""
+    return stem.rsplit("_", 1)[0] if "_" in stem else stem
+
+
+def split_yolo_by_scene(
+    src: str | Path,
+    out_dir: str | Path,
+    names: list[str],
+    val_scenes: list[str],
+    test_scenes: list[str],
+) -> dict[str, Any]:
+    """Reparte un dataset YOLO (`images/` + `labels/`) en train/val/test por escena.
+
+    Separar por escena evita que frames casi idénticos caigan a la vez en train y
+    en val/test e inflen las métricas.
+    """
+    src, out_dir = Path(src), Path(out_dir)
+    overlap = set(val_scenes) & set(test_scenes)
+    if overlap:
+        raise ValueError(f"Escenas en val y test a la vez: {sorted(overlap)}")
+    images = sorted(p for p in (src / "images").iterdir() if p.suffix.lower() in IMAGE_EXTS)
+    found = {scene_of(p.stem) for p in images}
+    unknown = (set(val_scenes) | set(test_scenes)) - found
+    if unknown:
+        raise ValueError(f"Escenas inexistentes: {sorted(unknown)}; hay {sorted(found)}")
+
+    splits: dict[str, dict[str, Any]] = {
+        s: {"split": s, "images": 0, "boxes": 0, "scenes": set(), "per_class": dict.fromkeys(names, 0)}
+        for s in ("train", "val", "test")
+    }
+    for img in images:
+        scene = scene_of(img.stem)
+        split = "val" if scene in val_scenes else "test" if scene in test_scenes else "train"
+        label_src = src / "labels" / f"{img.stem}.txt"
+        text = label_src.read_text(encoding="utf-8") if label_src.exists() else ""
+        lines = [ln.strip() for ln in text.splitlines() if ln.strip()]
+        for ln in lines:
+            cid = int(ln.split()[0])
+            if not 0 <= cid < len(names):
+                raise ValueError(f"Clase {cid} fuera de rango en {label_src}")
+            splits[split]["per_class"][names[cid]] += 1
+        _place(img, out_dir / "images" / split / img.name)
+        dst = out_dir / "labels" / split / f"{img.stem}.txt"
+        dst.parent.mkdir(parents=True, exist_ok=True)
+        dst.write_text("\n".join(lines) + ("\n" if lines else ""), encoding="utf-8")
+        st = splits[split]
+        st["images"] += 1
+        st["boxes"] += len(lines)
+        st["scenes"].add(scene)
+    for st in splits.values():
+        st["scenes"] = sorted(st["scenes"])
+    write_data_yaml(out_dir, names, {"train": "train", "val": "val", "test": "test"})
+    report = {"src": str(src.resolve()), "names": names, "splits": list(splits.values())}
+    (out_dir / "prepare_report.json").write_text(json.dumps(report, indent=2), encoding="utf-8")
+    return report
