@@ -5,3 +5,15 @@ __pycache__/
 *.engine
 *.onnx
 .ipynb_checkpoints/
+
+# Datos, pesos y salidas del prototipo de armas (issue #1): nunca en Git
+/data/
+/datasets/
+/weights/
+/runs/
+/reports/
+*.pt
+*.mp4
+*.avi
+*.mov
+*.mkv

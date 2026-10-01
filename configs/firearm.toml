@@ -1,0 +1,11 @@
+# Configuración del detector de armas (issue #1). Los flags del CLI la sobrescriben.
+[detector]
+# .pt entrenado en la laptop. En la Jetson (a futuro) se usará el engine TensorRT FP16.
+model = "runs/firearm/yolov8n_mgd_usrt/weights/best.pt"
+conf = 0.35
+iou = 0.5
+imgsz = 640
+device = "0"          # primera GPU CUDA; "cpu" para forzar CPU
+half = true           # FP16 en GPU
+classes = ["handgun", "person"]
+weapon_classes = ["handgun"]
