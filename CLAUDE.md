@@ -6,9 +6,9 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 Proyecto en Fase 0: videovigilancia multiagente para **Jetson Orin Nano 8GB**, todo en **Python + AgentScope**, objetivo 4-8 streams 1080p con inferencia compartida. Se realizará un **entorno de campo multiagéntico**: el sistema se despliega y opera en campo, en el edge, como un conjunto de agentes AgentScope coordinados. Reemplaza al repo anterior `condor-eye-backend` (ISR para drones); no se reutiliza nada de él.
 
-Lo implementado es `src/compare/` (harness de benchmark de detectores) y `src/firearm/` (prototipo de detección de armas en video grabado, issue #1; ver `docs/firearm-detection.md`). El modelo base ya está decidido: **YOLOv8n** (ARCH-002).
+Lo implementado incluye `src/compare/` (harness de benchmark de detectores), `src/firearm/` (prototipo de detección de armas en video grabado, issue #1; ver `docs/firearm-detection.md`) y el scaffold de la arquitectura multiagente en `src/agents/`, `src/bus/` y `src/pipeline/`. El modelo base ya está decidido: **YOLOv8n** (ARCH-002).
 
-**Máquina de desarrollo actual: laptop x86_64 con RTX 5080 Laptop 16 GB (Windows).** Entrenamiento, inferencia y demos se validan ahí. La validación en la Jetson Orin Nano (export TensorRT `.engine`, pruebas sin OOM) queda diferida; no bloquea el trabajo actual. Los módulos `src/agents/`, `src/pipeline/` y `src/bus/` descritos en el README y en `docs/architecture.md` **todavía no existen**; son el diseño a seguir al crearlos.
+**Máquina de desarrollo actual: laptop x86_64 con RTX 5080 Laptop 16 GB (Windows).** Entrenamiento, inferencia y demos se validan ahí. La validación en la Jetson Orin Nano (export TensorRT `.engine`, pruebas sin OOM) queda diferida; no bloquea el trabajo actual. Los nuevos módulos multiagente definen contratos y topología, pero todavía no implementan los adaptadores de producción para GStreamer, DeepStream, TensorRT, persistencia o comunicaciones externas.
 
 ## Entorno y comandos (uv)
 
@@ -48,20 +48,27 @@ rows = compare_models([FakeDetector(), YOLOv8nDetector()], source="video.mp4", f
 - `YOLOv8nDetector` es el detector del proyecto; `weights` admite `.pt` o el engine TensorRT FP16 exportado con ultralytics.
 - `PeopleNetDetector` queda como referencia descartada: la ruta `.onnx` devuelve solo las formas de salida y la ruta TensorRT lanza `NotImplementedError`. No invertir trabajo en él.
 
-## Arquitectura objetivo (ver `docs/architecture.md`)
+## Arquitectura multiagente (ver `docs/architecture.md`)
 
 Dos planos separados. Esta separación es la regla central del diseño:
 
 - **Plano video**: un único pipeline GStreamer compartido (NVDEC → `nvstreammux` batch N → `nvinfer` FP16 → `nvtracker` → appsink) en `src/pipeline/`, fuera de AgentScope.
-- **Plano agentes**: agentes AgentScope que intercambian solo metadata (detecciones, tracks, eventos) por MsgHub: `ingest` (uno por cámara), `inference` (único, escala por batch), `tracker`, `event` (ReActAgent), `storage` (clips + SQLite WAL), `supervisor` (ReActAgent) y `comms` (FastAPI HTTP/WS).
+- **Plano agentes**: siete roles AgentScope intercambian solo metadata (detecciones, tracks, eventos): `ingest` (uno por cámara), `inference` (único, escala por batch), `tracker`, `event`, `storage`, `supervisor` y `comms`.
+
+El scaffold actual se organiza así:
+
+- `src/agents/`: definiciones de roles, constructor sobre `agentscope.agent.Agent` 2.x y registro canónico `MULTIAGENT_ROUTE`.
+- `src/bus/hub.py`: `MetadataHub`, `MetadataEnvelope` y tópicos tipados. Es la frontera que deberá adaptar la mensajería concreta de AgentScope.
+- `src/pipeline/shared_pipeline.py`: contrato del pipeline de video compartido, sin implementación GStreamer todavía.
+- `src/pipeline/trt_engine.py`: especificación del único engine TensorRT FP16 versionado.
 
 Reglas de `docs/tech-stack.md` que no se deben romper:
 - Ningún frame sale del pipeline hacia el MsgHub.
 - Un solo engine TensorRT FP16 versionado y compartido por todos los streams; nunca un modelo por cámara. FP32 está prohibido en producción.
-- Los agentes usan la interfaz tipada de `src/bus/hub.py`, nunca el MsgHub crudo.
+- Los agentes usan la interfaz tipada de `src/bus/hub.py`, nunca el mecanismo de mensajería crudo.
 - Solo Python (sin Rust, Go ni C++ propio). Despliegue con Docker Compose sobre JetPack 6, sin Kubernetes.
 - Ante un OOM se baja a 720p o se reduce el batch; no se duplican modelos.
 
-La decisión abierta (ARCH-003 NvDCF vs ByteTrack) están en la tabla de decisiones de `docs/architecture.md`. Actualízala cuando se resuelvan.
+La decisión abierta ARCH-003 (NvDCF vs ByteTrack) está en la tabla de decisiones de `docs/architecture.md`. Actualízala cuando se resuelva.
 
 Los artefactos `*.engine` y `*.onnx` están en `.gitignore`; no se versionan.
