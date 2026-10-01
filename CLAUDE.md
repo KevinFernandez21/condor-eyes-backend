@@ -26,7 +26,7 @@ uv run pytest tests/test_x.py::test_y   # un solo test
 
 No hay Dockerfile ni pre-commit todavía. `FakeDetector` permite probar el harness sin GPU ni pesos.
 
-`torch`/`torchvision` salen del índice CUDA 13.0 de PyTorch en x86_64 (`[tool.uv.sources]`); las RTX serie 50 necesitan CUDA >= 12.8. El CLI del prototipo de armas es `uv run python scripts/firearm.py {prepare-data,train,eval,annotate}`.
+`torch`/`torchvision` salen del índice CUDA 13.0 de PyTorch en x86_64 (`[tool.uv.sources]`); las RTX serie 50 necesitan CUDA >= 12.8. El CLI del prototipo de armas es `uv run python scripts/firearm.py {split-scenes,prepare-data,train,eval,annotate}`. El dataset en uso es Simuletic CCTV Weapon (Kaggle, sintético, clases `person`/`weapon`, split por escena); CCTV-Gun quedó bloqueado por enlaces caídos. Resultados en `docs/reports/firearm-prototype.md`.
 
 En la Orin, JetPack 6 trae Python 3.10 y sus bindings de TensorRT/DeepStream están compilados para 3.10; con el Python 3.11 de uv habrá que conseguir o compilar esos bindings para 3.11.
 

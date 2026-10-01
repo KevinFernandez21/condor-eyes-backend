@@ -39,41 +39,62 @@ Todos los comandos pasan por `scripts/firearm.py` (agrega `src/` al `sys.path`):
 uv run python scripts/firearm.py --help
 ```
 
-## 1. Datos: CCTV-Gun
+## 1. Datos
 
-[CCTV-Gun](https://github.com/srikarym/CCTV-Gun) reúne imágenes de vigilancia de tres
-fuentes con anotaciones COCO de dos clases, `person` y `handgun`. Las imágenes
-**no** vienen en ese repo: hay que bajarlas a mano de cada fuente original
-(Google Drive, OneDrive y Dropbox) siguiendo su
-[`dataset_instructions.md`](https://github.com/srikarym/CCTV-Gun/blob/master/dataset_instructions.md),
-y ejecutar sus scripts `copy_images_*.py`. El resultado es un `data/` con
-`all_images/` y las anotaciones.
+### Dataset actual: Simuletic CCTV Weapon (Kaggle)
 
-Split del prototipo:
+[`simuletic/cctv-weapon-dataset`](https://www.kaggle.com/datasets/simuletic/cctv-weapon-dataset)
+(versión 4, 2025-11-23) es un set **sintético** de 141 imágenes de cámaras CCTV en 6 escenas
+(pasillo, patio escolar, gasolinera, parking, restaurante, calle) con etiquetas YOLO
+`0 = person` y `1 = weapon`. `weapon` agrupa armas de fuego (sobre todo rifles y
+pistolas) y armas blancas, así que el modelo detecta "arma", no solo "pistola".
+Trae además `evaluation.mp4` (6 s, 464×688), que se usa como video de prueba.
 
-| Split | Fuente | Uso |
-|---|---|---|
-| train / val | `data/mgd_usrt/annotations_{train,val}.json` (MGD + USRT) | Fine-tuning |
-| test | `data/ucf/annotation_detection/annotations_all.json` (UCF completo) | Held-out entre dominios, nunca visto en entrenamiento |
-| negatives | Carpeta propia (`--negatives`) | Hard negatives: teléfonos, herramientas, manos vacías |
+```bash
+mkdir -p data/raw && curl -L -o data/raw/cctv-weapon-dataset.zip https://www.kaggle.com/api/v1/datasets/download/simuletic/cctv-weapon-dataset
+unzip data/raw/cctv-weapon-dataset.zip -d data/raw/cctv-weapon
+uv run python scripts/firearm.py split-scenes
+```
+
+Los frames de una misma escena son casi idénticos, así que `split-scenes` divide
+**por escena** para que val y test no compartan escenas con train:
+
+| Split | Escenas | Imágenes | Cajas `weapon` |
+|---|---|---|---|
+| train | Scene1–Scene4 | 108 | 102 |
+| val | Scene5 | 18 | 13 |
+| test | Scene6 | 15 | 15 |
+
+Limitaciones: es poco volumen, todo sintético y con pocas escenas. Val y test
+tienen una sola escena cada uno, así que las métricas tienen mucha varianza y no
+predicen el rendimiento en video real. Sirve para validar el flujo de punta a
+punta, no como modelo final.
+
+### CCTV-Gun (bloqueado)
+
+[CCTV-Gun](https://github.com/srikarym/CCTV-Gun) era el dataset recomendado por el
+issue (imágenes reales; train MGD+USRT, test UCF). El 2026-09-30 no se pudo
+obtener: el `MGD.rar` de Google Drive devuelve 404, el zip de USRT en el
+SharePoint de la U. de Sevilla exige login (401) y UCF solo se descarga como la
+carpeta completa de Dropbox, de decenas de GB. Si se consigue (por ejemplo,
+pidiéndolo a los autores), `prepare-data` ya lo convierte:
 
 ```bash
 uv run python scripts/firearm.py prepare-data --root ../CCTV-Gun/data --out datasets/cctv_gun_mgd_usrt --negatives data/hard_negatives
 ```
 
-Genera `images/`, `labels/` (formato YOLO), `data.yaml` y `prepare_report.json`
-con el conteo de imágenes y cajas por split. Las imágenes se enlazan con
-hardlinks cuando se puede, para no duplicar espacio.
+En ese caso se pasa `--data datasets/cctv_gun_mgd_usrt/data.yaml` a `train`/`eval`
+y se cambia `classes`/`weapon_classes` a `handgun` en la config.
 
 ## 2. Entrenamiento (fine-tuning)
 
 Parte de `yolov8n.pt` preentrenado en COCO, con `imgsz=640`:
 
 ```bash
-uv run python scripts/firearm.py train --epochs 100 --batch 32
+uv run python scripts/firearm.py train --base weights/yolov8n.pt
 ```
 
-Los pesos quedan en `runs/firearm/yolov8n_mgd_usrt/weights/best.pt`, que es el
+Los pesos quedan en `runs/firearm/yolov8n_simuletic/weights/best.pt`, que es el
 `model` por defecto de `configs/firearm.toml`. El batch de entrenamiento puede
 ser mayor que 1; **la inferencia siempre es batch 1**.
 
@@ -83,7 +104,7 @@ ser mayor que 1; **la inferencia siempre es batch 1**.
 uv run python scripts/firearm.py eval --split test --negatives data/hard_negatives --output reports/eval_test.json
 ```
 
-Reporta mAP50 y mAP50-95 globales y por clase sobre el held-out UCF. También
+Reporta mAP50 y mAP50-95 globales y por clase sobre el split `test`. También
 mide la **tasa de falsos positivos** en hard negatives, es decir, el porcentaje de
 imágenes sin arma en las que se detecta `handgun` con `conf ≥ umbral`.
 
@@ -132,6 +153,7 @@ comercial hay que decidir una de estas opciones:
 
 | Fuente | Qué es | Licencia / uso | Estado |
 |---|---|---|---|
+| Simuletic CCTV Weapon (Kaggle, v4) | 141 imágenes sintéticas, etiquetas YOLO | CC BY-SA 4.0 según Kaggle; la descripción del dataset dice CC BY 4.0. Se toma la más restrictiva (BY-SA): atribuir a Simuletic y compartir derivados del dataset con la misma licencia | Verificado (metadatos de Kaggle) |
 | CCTV-Gun (anotaciones y scripts) | Benchmark de Yellapragada et al., 2023 | Repo bajo Apache-2.0 | Verificado (licencia del repo en GitHub) |
 | MGD (Monash Gun Dataset) | Lim et al., 2021 | Términos de la fuente original | **Por verificar antes de descargar** |
 | USRT (Universidad de Sevilla) | González et al., 2020 | Términos de la fuente original | **Por verificar antes de descargar** |

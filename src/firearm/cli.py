@@ -11,7 +11,7 @@ from pathlib import Path
 from typing import Any
 
 from .config import load_config
-from .dataset import IMAGE_EXTS, prepare_cctv_gun
+from .dataset import IMAGE_EXTS, prepare_cctv_gun, split_yolo_by_scene
 
 
 def _print_json(data: Any) -> None:
@@ -22,6 +22,13 @@ def cmd_prepare(a: argparse.Namespace) -> None:
     report = prepare_cctv_gun(a.root, a.out, pair=a.pair, heldout=a.heldout, negatives=a.negatives)
     for s in report["splits"]:
         print(f"{s['split']:>10}: {s['images']} imágenes, {s['boxes']} cajas, faltantes={s.get('missing', 0)}")
+    print(f"data.yaml en {Path(a.out) / 'data.yaml'}")
+
+
+def cmd_split(a: argparse.Namespace) -> None:
+    report = split_yolo_by_scene(a.src, a.out, a.names, a.val_scenes, a.test_scenes)
+    for s in report["splits"]:
+        print(f"{s['split']:>6}: {s['images']} imágenes, {s['boxes']} cajas {s['per_class']} escenas={s['scenes']}")
     print(f"data.yaml en {Path(a.out) / 'data.yaml'}")
 
 
@@ -135,22 +142,30 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--negatives", help="Carpeta de imágenes sin arma (hard negatives)")
     s.set_defaults(func=cmd_prepare)
 
+    s = sub.add_parser("split-scenes", help="Divide un dataset YOLO en train/val/test por escena")
+    s.add_argument("--src", default="data/raw/cctv-weapon/Dataset", help="Carpeta con images/ y labels/")
+    s.add_argument("--out", default="datasets/simuletic_cctv_weapon")
+    s.add_argument("--names", nargs="+", default=["person", "weapon"], help="Nombres de clase por índice")
+    s.add_argument("--val-scenes", nargs="+", default=["Scene5"])
+    s.add_argument("--test-scenes", nargs="+", default=["Scene6"])
+    s.set_defaults(func=cmd_split)
+
     s = sub.add_parser("train", help="Fine-tuning de YOLOv8n en la GPU de la laptop")
-    s.add_argument("--data", default="datasets/cctv_gun_mgd_usrt/data.yaml")
+    s.add_argument("--data", default="datasets/simuletic_cctv_weapon/data.yaml")
     s.add_argument("--base", default="yolov8n.pt", help="Checkpoint inicial (COCO preentrenado)")
-    s.add_argument("--epochs", type=int, default=100)
+    s.add_argument("--epochs", type=int, default=150)
     s.add_argument("--imgsz", type=int, default=640)
-    s.add_argument("--batch", type=int, default=32, help="Batch de entrenamiento (la inferencia es batch 1)")
+    s.add_argument("--batch", type=int, default=16, help="Batch de entrenamiento (la inferencia es batch 1)")
     s.add_argument("--device", default="0")
     s.add_argument("--workers", type=int, default=4)
-    s.add_argument("--patience", type=int, default=25)
+    s.add_argument("--patience", type=int, default=50)
     s.add_argument("--project", default="runs/firearm")
-    s.add_argument("--name", default="yolov8n_mgd_usrt")
+    s.add_argument("--name", default="yolov8n_simuletic")
     s.set_defaults(func=cmd_train)
 
     s = sub.add_parser("eval", help="mAP en el split held-out y falsos positivos en negativos")
     s.add_argument("--config", default="configs/firearm.toml")
-    s.add_argument("--data", default="datasets/cctv_gun_mgd_usrt/data.yaml")
+    s.add_argument("--data", default="datasets/simuletic_cctv_weapon/data.yaml")
     s.add_argument("--split", default="test")
     s.add_argument("--model")
     s.add_argument("--device")

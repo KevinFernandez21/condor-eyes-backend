@@ -16,7 +16,13 @@ from firearm import (
     latency_stats,
     load_config,
 )
-from firearm.dataset import coco_bbox_to_yolo, convert_split, write_data_yaml
+from firearm.dataset import (
+    coco_bbox_to_yolo,
+    convert_split,
+    scene_of,
+    split_yolo_by_scene,
+    write_data_yaml,
+)
 
 NAMES = {0: "person", 1: "handgun"}
 
@@ -64,7 +70,7 @@ def test_load_config_toml_and_overrides(tmp_path: Path):
 
 def test_repo_config_is_valid():
     cfg = load_config(Path(__file__).resolve().parents[1] / "configs" / "firearm.toml")
-    assert cfg.weapon_classes == ["handgun"]
+    assert cfg.weapon_classes == ["weapon"] and "weapon" in cfg.classes
 
 
 @pytest.mark.parametrize("bad", ['conf = 1.5', 'imgsz = 600', 'foo = 1'])
@@ -143,6 +149,46 @@ def test_convert_split_writes_labels(tmp_path: Path):
     assert (out / "images/train/a.jpg").exists()
     yaml = write_data_yaml(out, stats["names"], {"train": "train"}).read_text()
     assert "1: handgun" in yaml
+
+
+def _yolo_src(tmp_path: Path) -> Path:
+    import cv2
+
+    src = tmp_path / "src"
+    (src / "images").mkdir(parents=True)
+    (src / "labels").mkdir()
+    for scene, n in (("Scene1", 3), ("Scene2", 2), ("Scene3", 2)):
+        for i in range(1, n + 1):
+            cv2.imwrite(str(src / "images" / f"{scene}_{i}.png"), np.zeros((8, 8, 3), dtype="uint8"))
+            (src / "labels" / f"{scene}_{i}.txt").write_text("0 0.5 0.5 0.2 0.2\n1 0.4 0.4 0.1 0.1\n")
+    return src
+
+
+def test_scene_of():
+    assert scene_of("Scene3_12") == "Scene3" and scene_of("frame") == "frame"
+
+
+def test_split_yolo_by_scene_keeps_scenes_apart(tmp_path: Path):
+    out = tmp_path / "out"
+    report = split_yolo_by_scene(_yolo_src(tmp_path), out, ["person", "weapon"], ["Scene2"], ["Scene3"])
+    by = {s["split"]: s for s in report["splits"]}
+    assert (by["train"]["images"], by["val"]["images"], by["test"]["images"]) == (3, 2, 2)
+    assert by["val"]["scenes"] == ["Scene2"] and by["test"]["per_class"] == {"person": 2, "weapon": 2}
+    assert sorted(p.name for p in (out / "labels/test").iterdir()) == ["Scene3_1.txt", "Scene3_2.txt"]
+    assert "test: images/test" in (out / "data.yaml").read_text()
+
+
+@pytest.mark.parametrize(("val", "test"), [(["Scene2"], ["Scene2"]), (["Nope"], ["Scene3"])])
+def test_split_yolo_by_scene_rejects_bad_scenes(tmp_path: Path, val, test):
+    with pytest.raises(ValueError):
+        split_yolo_by_scene(_yolo_src(tmp_path), tmp_path / "o", ["person", "weapon"], val, test)
+
+
+def test_split_yolo_by_scene_rejects_out_of_range_class(tmp_path: Path):
+    src = _yolo_src(tmp_path)
+    (src / "labels" / "Scene1_1.txt").write_text("5 0.5 0.5 0.1 0.1\n")
+    with pytest.raises(ValueError):
+        split_yolo_by_scene(src, tmp_path / "o", ["person", "weapon"], ["Scene2"], ["Scene3"])
 
 
 # --- smoke: video corto de punta a punta ------------------------------------
