@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Estado del repo
 
-Proyecto en Fase 0: videovigilancia multiagente para **Jetson Orin Nano 8GB**, todo en **Python + AgentScope**, objetivo 4-8 streams 1080p con inferencia compartida. Reemplaza al repo anterior `condor-eye-backend` (ISR para drones); no se reutiliza nada de él.
+Proyecto en Fase 0: videovigilancia multiagente para **Jetson Orin Nano 8GB**, todo en **Python + AgentScope**, objetivo 4-8 streams 1080p con inferencia compartida. Se realizará un **entorno de campo multiagéntico**: el sistema se despliega y opera en campo, en el edge, como un conjunto de agentes AgentScope coordinados. Reemplaza al repo anterior `condor-eye-backend` (ISR para drones); no se reutiliza nada de él.
 
 Lo único implementado es `src/compare/`, el harness de benchmark de detectores. El modelo base ya está decidido: **YOLOv8n** (ARCH-002). Los módulos `src/agents/`, `src/pipeline/` y `src/bus/` descritos en el README y en `docs/architecture.md` **todavía no existen**; son el diseño a seguir al crearlos.
 
