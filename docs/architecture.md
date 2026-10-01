@@ -56,7 +56,7 @@ src/bus/hub.py                    # wrapper MsgHub: publish/subscribe tipado
 | ID | Estado | Descripción |
 |---|---|---|
 | ARCH-001 | Decidido | Orquestación: AgentScope, todo Python |
-| ARCH-002 | Pendiente | Modelo base: YOLOv8n vs PeopleNet en Orin |
+| ARCH-002 | Decidido | Modelo base: YOLOv8n (ultralytics), descartado PeopleNet |
 | ARCH-003 | Pendiente | Tracker: NvDCF vs ByteTrack liviano |
 | ARCH-004 | Decidido | Repo anterior descartado |
 | ARCH-005 | Decidido | Video fuera del bus AgentScope, solo metadata por MsgHub |
