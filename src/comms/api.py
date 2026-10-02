@@ -318,11 +318,11 @@ def create_app(
 
         @router.get("/traces")
         async def list_traces(limit: int = Limit) -> dict[str, Any]:
-            return {"traces": traces.list(limit)}
+            return {"traces": await asyncio.to_thread(traces.list, limit)}
 
         @router.get("/traces/{correlation_id}")
         async def get_trace(correlation_id: str) -> dict[str, Any]:
-            trace = traces.get(correlation_id)
+            trace = await asyncio.to_thread(traces.get, correlation_id)
             if trace is None:
                 raise HTTPException(status_code=404, detail="Traza desconocida o expulsada")
             return trace

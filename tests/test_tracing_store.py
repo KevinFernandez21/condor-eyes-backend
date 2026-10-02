@@ -2,6 +2,8 @@
 
 from datetime import UTC, datetime, timedelta
 
+import pytest
+
 from bus import MetadataEnvelope, Topic, envelope_to_dict
 from tracing import TraceStore
 
@@ -198,3 +200,69 @@ def test_con_marcas_iguales_el_padre_va_antes_que_el_hijo():
     feed(store, Topic.TRACKS, child(det, 0, "tracker", "tracks"))
     ids = [h["event_id"] for h in store.get("dec-0")["hops"]]
     assert ids == [det.event_id, f"{det.event_id}/tracks", "dec-0"]
+
+
+def raw(event_id, created_at, correlation_id=None, causation_id=None, topic="events"):
+    return {
+        "topic": topic, "source": "s", "payload": {}, "stream_id": None,
+        "created_at": created_at, "event_id": event_id,
+        "correlation_id": correlation_id or event_id, "causation_id": causation_id,
+    }
+
+
+def test_marcas_ingenuas_y_con_zona_no_rompen_get_ni_list():
+    store = TraceStore()
+    store.record(Topic.DETECTIONS, raw("a", "2026-01-01T00:00:00+00:00", "c", topic="vision.detections"))
+    store.record(Topic.EVENTS, raw("b", "2026-01-01T00:00:00.050", "c", "a"))  # sin zona horaria
+    trace = store.get("c")
+    assert [h["event_id"] for h in trace["hops"]] == ["a", "b"]
+    assert trace["hops"][1]["hop_latency_ms"] == 50.0  # la ingenua se toma como UTC
+    assert trace["hops"][1]["created_at"].endswith("+00:00")
+    assert store.list(10)[0]["hops"] == 2
+
+
+def test_zonas_horarias_distintas_se_normalizan_a_utc():
+    store = TraceStore()
+    store.record(Topic.DETECTIONS, raw("a", "2026-01-01T01:00:00+01:00", "c", topic="vision.detections"))
+    store.record(Topic.EVENTS, raw("b", "2026-01-01T00:00:00.020+00:00", "c", "a"))
+    assert store.get("c")["hops"][1]["hop_latency_ms"] == 20.0
+
+
+@pytest.mark.parametrize("malo", ["ayer", "", None, 12, "2026-13-45T00:00:00"])
+def test_marca_invalida_se_descarta_y_se_cuenta_sin_lanzar(malo):
+    store = TraceStore()
+    store.record(Topic.EVENTS, raw("a", malo, "c"))
+    store.record(Topic.EVENTS, raw("b", "2026-01-01T00:00:00+00:00", "c2"))
+    assert store.skipped == 1
+    assert store.get("c") is None
+    assert [t["correlation_id"] for t in store.list(10)] == ["c2"]
+
+
+def test_mensaje_sin_campos_se_descarta_y_se_cuenta():
+    store = TraceStore()
+    store.record(Topic.EVENTS, {"topic": "events"})
+    assert store.skipped == 1
+
+
+def test_list_de_50_trazas_de_500_saltos_es_rapido():
+    import time
+
+    store = TraceStore(max_traces=60, max_hops=500)
+    for c in range(50):
+        parent = None
+        for i in range(500):
+            eid = f"{c}-{i}"
+            store.record(
+                Topic.TRACKS,
+                raw(eid, f"2026-01-01T00:00:{i // 100:02d}.{(i % 100) * 10:03d}+00:00",
+                    f"c{c}", parent, topic="vision.tracks"),
+            )
+            parent = eid
+    t0 = time.perf_counter()
+    rows = store.list(50)
+    elapsed = time.perf_counter() - t0
+    assert len(rows) == 50 and rows[0]["hops"] == 500
+    assert elapsed < 0.5, elapsed
+    t0 = time.perf_counter()
+    store.get("c3")
+    assert time.perf_counter() - t0 < 0.1

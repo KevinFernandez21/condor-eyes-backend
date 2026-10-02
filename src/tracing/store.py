@@ -9,24 +9,34 @@ embeddings.
 
 Acotado por dos límites: las últimas ``max_traces`` correlaciones (LRU por
 último mensaje recibido) y ``max_hops`` saltos por correlación. El índice
-``event_id -> correlación`` se depura al expulsar una traza.
+``event_id -> salto`` se depura al expulsar una traza.
 
-La latencia se calcula con ``created_at`` de los envelopes y por tanto supone un
-reloj común entre productores; si un salto resulta negativo, la traza se marca
-con ``clock_anomaly``.
+Concurrencia: el lock solo protege la escritura y la *recolección* de los saltos
+de una traza (O(n) con búsquedas por diccionario); el ordenamiento causal
+(O(n log n)) y el formateo ocurren fuera del lock sobre saltos inmutables.
+``get``/``list`` nunca lanzan: los mensajes inválidos se descartan al registrar.
+
+La latencia se calcula con ``created_at`` de los envelopes, normalizado a UTC
+(una marca sin zona horaria se toma como UTC), y por tanto supone un reloj común
+entre productores; si un salto resulta negativo, la traza se marca con
+``clock_anomaly``.
 """
 
 from __future__ import annotations
 
 import builtins
+import heapq
+import logging
 import threading
 from collections import OrderedDict
-from datetime import datetime
+from datetime import UTC, datetime
 from typing import Any
 
 from bus import Topic
 
-_MAX_ANCESTOR_DEPTH = 64
+logger = logging.getLogger(__name__)
+
+_MAX_ANCESTORS = 5_000
 
 # Los latidos son periódicos y cada uno abre su propia correlación: llenarían la
 # LRU y expulsarían las cadenas que sí importan.
@@ -35,6 +45,14 @@ _NOT_CAUSAL = frozenset({Topic.HEALTH})
 
 def _is_decision(topic: Topic, data: dict[str, Any]) -> bool:
     return topic is Topic.EVENTS and "decision_id" in (data.get("payload") or {})
+
+
+def _parse_utc(value: Any) -> datetime:
+    """ISO 8601 -> datetime con zona UTC; lanza ValueError/TypeError si no es válida."""
+    if not isinstance(value, str):
+        raise TypeError("created_at debe ser texto ISO 8601")
+    ts = datetime.fromisoformat(value)
+    return ts.replace(tzinfo=UTC) if ts.tzinfo is None else ts.astimezone(UTC)
 
 
 class _Hop:
@@ -50,8 +68,8 @@ class _Hop:
         self.topic = topic
         self.source: str = data["source"]
         self.stream_id: str | None = data.get("stream_id")
-        self.created_at: str = data["created_at"]
-        self.ts = datetime.fromisoformat(self.created_at)
+        self.ts = _parse_utc(data["created_at"])
+        self.created_at: str = self.ts.isoformat()
         self.seq = seq
         self.decision: dict[str, Any] | None = None
         if _is_decision(topic, data):
@@ -60,7 +78,7 @@ class _Hop:
                 "decision_id": p.get("decision_id"),
                 "outcome": p.get("outcome"),
                 "confidence": p.get("confidence"),
-                "reason_codes": list(p.get("reason_codes") or []),
+                "reason_codes": builtins.list(p.get("reason_codes") or []),
                 "evidence": [
                     {
                         "evidence_id": e.get("evidence_id"),
@@ -84,7 +102,7 @@ class _Trace:
 class TraceStore:
     """Trazas por correlación, acotadas y de solo metadata."""
 
-    def __init__(self, max_traces: int = 200, max_hops: int = 500) -> None:
+    def __init__(self, max_traces: int = 200, max_hops: int = 200) -> None:
         if max_traces < 1:
             raise ValueError("max_traces debe ser al menos 1")
         if max_hops < 1:
@@ -92,9 +110,15 @@ class TraceStore:
         self._max_traces = max_traces
         self._max_hops = max_hops
         self._traces: OrderedDict[str, _Trace] = OrderedDict()
-        self._index: dict[str, str] = {}  # event_id -> correlation_id
+        self._by_event: dict[str, _Hop] = {}
         self._seq = 0
+        self._skipped = 0
         self._lock = threading.Lock()
+
+    @property
+    def skipped(self) -> int:
+        """Mensajes descartados por inválidos (marca de tiempo o campos ausentes)."""
+        return self._skipped
 
     # -- escritura (firma compatible con ``BusTap.add_listener``) --
 
@@ -103,7 +127,13 @@ class TraceStore:
         if topic in _NOT_CAUSAL:
             return
         with self._lock:
-            hop = _Hop(topic, data, self._seq)
+            try:
+                hop = _Hop(topic, data, self._seq)
+            except (KeyError, TypeError, ValueError, AttributeError):
+                if self._skipped == 0:  # una vez: no inundar el log
+                    logger.warning("TraceStore descartó un mensaje inválido", exc_info=True)
+                self._skipped += 1
+                return
             self._seq += 1
             trace = self._traces.get(hop.correlation_id)
             if trace is None:
@@ -115,12 +145,12 @@ class TraceStore:
                     trace.truncated = True
                 else:
                     trace.hops[hop.event_id] = hop
-                    self._index[hop.event_id] = hop.correlation_id
+                    self._by_event[hop.event_id] = hop
             while len(self._traces) > self._max_traces:
-                old_id, old = self._traces.popitem(last=False)
-                for event_id in old.hops:
-                    if self._index.get(event_id) == old_id:
-                        del self._index[event_id]
+                _, old = self._traces.popitem(last=False)
+                for event_id, old_hop in old.hops.items():
+                    if self._by_event.get(event_id) is old_hop:
+                        del self._by_event[event_id]
 
     # -- lectura --
 
@@ -129,55 +159,60 @@ class TraceStore:
             trace = self._traces.get(correlation_id)
             if trace is None:
                 return None
-            return self._build(correlation_id, trace)
+            combined, truncated = self._gather(trace)
+        return self._build(correlation_id, combined, truncated)
 
-    def list(self, limit: int = 50) -> list[dict[str, Any]]:
+    def list(self, limit: int = 50) -> builtins.list[dict[str, Any]]:
         """Resúmenes (sin saltos), la correlación más reciente primero."""
         with self._lock:
-            out: list[dict[str, Any]] = []
+            gathered: builtins.list[tuple[str, dict[str, _Hop], bool]] = []
             for correlation_id in reversed(self._traces):
-                built = self._build(correlation_id, self._traces[correlation_id])
-                out.append(
-                    {
-                        "correlation_id": correlation_id,
-                        "started_at": built["started_at"],
-                        "ended_at": built["ended_at"],
-                        "hops": len(built["hops"]),
-                        "topics": built["topics"],
-                        "has_alert": built["has_alert"],
-                        "end_to_end_ms": built["end_to_end_ms"],
-                        "decision_ids": [d["decision_id"] for d in built["decisions"]],
-                        "truncated": built["truncated"],
-                        "clock_anomaly": built["clock_anomaly"],
-                    }
-                )
-                if len(out) >= limit:
+                combined, truncated = self._gather(self._traces[correlation_id])
+                gathered.append((correlation_id, combined, truncated))
+                if len(gathered) >= limit:
                     break
-            return out
+        out: builtins.list[dict[str, Any]] = []
+        for correlation_id, combined, truncated in gathered:
+            built = self._build(correlation_id, combined, truncated)
+            out.append(
+                {
+                    "correlation_id": correlation_id,
+                    "started_at": built["started_at"],
+                    "ended_at": built["ended_at"],
+                    "hops": len(built["hops"]),
+                    "topics": built["topics"],
+                    "has_alert": built["has_alert"],
+                    "end_to_end_ms": built["end_to_end_ms"],
+                    "decision_ids": [d["decision_id"] for d in built["decisions"]],
+                    "truncated": built["truncated"],
+                    "clock_anomaly": built["clock_anomaly"],
+                }
+            )
+        return out
 
-    # -- construcción de la cadena --
+    # -- recolección (con lock) --
 
-    def _hop(self, event_id: str) -> _Hop | None:
-        correlation_id = self._index.get(event_id)
-        if correlation_id is None:
-            return None
-        trace = self._traces.get(correlation_id)
-        return None if trace is None else trace.hops.get(event_id)
-
-    def _ancestors(self, start: _Hop, acc: dict[str, _Hop], depth: int = 0) -> None:
-        """Añade a ``acc`` el salto y todo lo que lo causó (causación y evidencia)."""
-        if start.event_id in acc or depth > _MAX_ANCESTOR_DEPTH:
-            return
-        acc[start.event_id] = start
-        if start.causation_id:
-            parent = self._hop(start.causation_id)
-            if parent is not None:
-                self._ancestors(parent, acc, depth + 1)
-        if start.decision is not None:
-            for evidence in start.decision["evidence"]:
-                parent = self._hop(evidence["evidence_id"])
+    def _gather(self, trace: _Trace) -> tuple[dict[str, _Hop], bool]:
+        """Saltos de la traza más todo lo que los causó (causación y evidencia)."""
+        combined: dict[str, _Hop] = {}
+        stack: builtins.list[_Hop] = builtins.list(trace.hops.values())
+        while stack and len(combined) < _MAX_ANCESTORS:
+            hop = stack.pop()
+            if hop.event_id in combined:
+                continue
+            combined[hop.event_id] = hop
+            if hop.causation_id:
+                parent = self._by_event.get(hop.causation_id)
                 if parent is not None:
-                    self._ancestors(parent, acc, depth + 1)
+                    stack.append(parent)
+            if hop.decision is not None:
+                for evidence in hop.decision["evidence"]:
+                    parent = self._by_event.get(evidence["evidence_id"])
+                    if parent is not None:
+                        stack.append(parent)
+        return combined, trace.truncated
+
+    # -- construcción de la cadena (sin lock) --
 
     @staticmethod
     def _parents(hop: _Hop, combined: dict[str, _Hop]) -> builtins.list[str]:
@@ -195,28 +230,42 @@ class TraceStore:
     def _causal_order(
         combined: dict[str, _Hop], parents_of: dict[str, builtins.list[str]]
     ) -> builtins.list[_Hop]:
-        """Orden por tiempo, pero sin poner nunca a un hijo antes que su padre.
+        """Orden por tiempo sin poner nunca a un hijo antes que su padre.
 
-        Con marcas iguales (reloj grueso) o llegadas desordenadas, el simple
-        orden por tiempo podría invertir una arista causal.
+        Kahn con montículo por (ts, seq): O(n log n). Con marcas iguales (reloj
+        grueso) o llegadas desordenadas, el simple orden por tiempo podría
+        invertir una arista causal.
         """
-        pending = sorted(combined.values(), key=lambda h: (h.ts, h.seq))
-        placed: set[str] = set()
+        children: dict[str, builtins.list[str]] = {}
+        indegree: dict[str, int] = {}
+        for eid, parents in parents_of.items():
+            indegree[eid] = len(parents)
+            for parent in parents:
+                children.setdefault(parent, []).append(eid)
+        heap = [(h.ts, h.seq, h.event_id) for h in combined.values() if indegree[h.event_id] == 0]
+        heapq.heapify(heap)
         out: builtins.list[_Hop] = []
-        while pending:
-            pick = next(
-                (h for h in pending if all(p in placed for p in parents_of[h.event_id])),
-                pending[0],  # ciclo imposible en la práctica: no bloquear
+        placed: set[str] = set()
+        while heap:
+            _, _, eid = heapq.heappop(heap)
+            placed.add(eid)
+            out.append(combined[eid])
+            for child in children.get(eid, ()):
+                indegree[child] -= 1
+                if indegree[child] == 0:
+                    c = combined[child]
+                    heapq.heappush(heap, (c.ts, c.seq, child))
+        if len(out) < len(combined):  # ciclo (imposible en la práctica): no perder saltos
+            rest = sorted(
+                (h for h in combined.values() if h.event_id not in placed),
+                key=lambda h: (h.ts, h.seq),
             )
-            pending.remove(pick)
-            placed.add(pick.event_id)
-            out.append(pick)
+            out.extend(rest)
         return out
 
-    def _build(self, correlation_id: str, trace: _Trace) -> dict[str, Any]:
-        combined: dict[str, _Hop] = {}
-        for hop in trace.hops.values():
-            self._ancestors(hop, combined)
+    def _build(
+        self, correlation_id: str, combined: dict[str, _Hop], truncated: bool
+    ) -> dict[str, Any]:
         parents_of = {h.event_id: self._parents(h, combined) for h in combined.values()}
         ordered = self._causal_order(combined, parents_of)
         start = ordered[0].ts if ordered else None
@@ -250,7 +299,7 @@ class TraceStore:
         alerts = [h for h in ordered if h.topic is Topic.EVENTS]
         end_to_end: float | None = None
         if alerts and start is not None:
-            end_to_end = round((alerts[-1].ts - start).total_seconds() * 1000, 3)
+            end_to_end = round((max(h.ts for h in alerts) - start).total_seconds() * 1000, 3)
 
         decisions = []
         for hop in ordered:
@@ -274,7 +323,7 @@ class TraceStore:
             "has_alert": bool(alerts),
             "end_to_end_ms": end_to_end,
             "clock_anomaly": anomaly,
-            "truncated": trace.truncated,
+            "truncated": truncated,
             "topics": sorted({h.topic.value for h in ordered}),
             "hops": hops,
             "decisions": decisions,
