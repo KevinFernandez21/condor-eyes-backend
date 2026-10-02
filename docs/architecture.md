@@ -41,8 +41,13 @@ src/agents/ingest_agent.py, inference_agent.py, tracker_agent.py,
           event_agent.py, storage_agent.py, supervisor_agent.py, comms_agent.py
 src/pipeline/shared_pipeline.py   # único pipeline batcheado GStreamer
 src/pipeline/trt_engine.py        # carga del engine TensorRT FP16 versionado
-src/bus/hub.py                    # wrapper MsgHub: publish/subscribe tipado
+src/bus/hub.py                    # contrato tipado: Topic, MetadataEnvelope, validación
+src/bus/memory.py, agentscope_hub.py  # adaptadores (en memoria / Msg de AgentScope 2.x)
+src/agents/runtime.py, handlers.py    # ciclo de vida y lógica por rol
 ```
+
+AgentScope 2.x no incluye `MsgHub`; el bus usa `Msg` y `Agent.observe`. Detalle,
+garantías y diagrama de secuencia en [agentscope-runtime.md](agentscope-runtime.md).
 
 ## 4. Presupuesto Orin Nano 8GB (1080p)
 
