@@ -1,5 +1,41 @@
 """Frontera tipada del bus de metadata."""
 
-from .hub import MetadataEnvelope, MetadataHub, Topic
+from .hub import (
+    DEFAULT_PAYLOAD_VERSION,
+    SCHEMA_VERSION,
+    SUPPORTED_SCHEMA_VERSIONS,
+    HubError,
+    InvalidEnvelopeError,
+    InvalidTopicError,
+    MetadataEnvelope,
+    MetadataHub,
+    Topic,
+    UnsupportedVersionError,
+    build_error_envelope,
+    envelope_from_dict,
+    envelope_to_dict,
+    parse_topic,
+    register_payload_versions,
+    supported_payload_versions,
+    validate_envelope,
+)
 
-__all__ = ["MetadataEnvelope", "MetadataHub", "Topic"]
+__all__ = [
+    "DEFAULT_PAYLOAD_VERSION",
+    "SCHEMA_VERSION",
+    "SUPPORTED_SCHEMA_VERSIONS",
+    "HubError",
+    "InvalidEnvelopeError",
+    "InvalidTopicError",
+    "MetadataEnvelope",
+    "MetadataHub",
+    "Topic",
+    "UnsupportedVersionError",
+    "build_error_envelope",
+    "envelope_from_dict",
+    "envelope_to_dict",
+    "parse_topic",
+    "register_payload_versions",
+    "supported_payload_versions",
+    "validate_envelope",
+]
