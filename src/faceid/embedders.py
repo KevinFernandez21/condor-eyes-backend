@@ -12,6 +12,7 @@ puede usar el contenido enviado para mejorar sus productos.
 
 from __future__ import annotations
 
+import importlib
 import os
 import time
 from collections.abc import Callable, Mapping, Sequence
@@ -149,7 +150,7 @@ class GeminiEmbedder:
         if self._client is None:
             key = self._key()
             try:
-                from google import genai  # importación diferida: SDK opcional
+                genai = importlib.import_module("google.genai")  # SDK opcional
             except ImportError:
                 raise RuntimeError(
                     "Falta el SDK de Gemini (extra opcional 'cloud'): "
