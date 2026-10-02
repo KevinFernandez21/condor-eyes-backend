@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import secrets
 import time
 from collections.abc import Mapping
 from contextlib import suppress
@@ -40,10 +41,13 @@ from pipeline import (
 )
 
 from .api import RunnerCommsHandler, RunnerView
+from .cameras import CameraStatusPublisher, ScenarioDirector, camera_state
 from .config import SystemConfig
 from .detection import RunnerDetector
 from .fusion_service import FusionService
 from .plugins import PluginRegistry
+from .pseudonym import Pseudonymizer
+from .scenes import SceneDetector, SceneSimulator
 from .simulators import (
     ActuatorSimulator,
     IdentitySimulator,
@@ -83,8 +87,28 @@ class SystemApp:
         source_factory: SourceFactory | None = None,
         detector: Detector | None = None,
         api_token: str | None = None,
+        seed: int | None = None,
     ) -> None:
         self.config = config
+        self._seed: int = secrets.randbits(32) if seed is None else seed
+        self._ps = Pseudonymizer.from_seed(self._seed)
+        self._ps.check_unique(config.permissions)
+        self._scene: SceneSimulator | None = None
+        if (
+            detector is None
+            and config.detector.kind == "scenes"
+            and config.multi_camera
+        ):
+            self._scene = SceneSimulator(
+                config.cameras,
+                config.scenes,
+                handles=tuple(config.permissions),
+                seed=self._seed,
+            )
+            detector = SceneDetector(self._scene)
+        self._fake_factory: Any = None
+        self._factory: SourceFactory | None = None
+        self._uri = PLACEHOLDER_URI
         self._hub: InMemoryHub = hub or InMemoryHub(
             queue_size=config.queue_size, history_size=config.history_size
         )
@@ -121,6 +145,15 @@ class SystemApp:
     def view(self) -> RunnerView:
         """``SystemView`` (agentes, tópicos, eventos, decisiones) de la API."""
         return self._view
+
+    @property
+    def seed(self) -> int:
+        """Semilla de la simulación (escenas, caídas y seudónimos)."""
+        return self._seed
+
+    @property
+    def pseudonymizer(self) -> Pseudonymizer:
+        return self._ps
 
     @property
     def api_url(self) -> str | None:
@@ -199,6 +232,8 @@ class SystemApp:
             "uptime_s": round(time.monotonic() - self._started_at, 3)
             if self._started_at is not None and self._running
             else 0.0,
+            "seed": self._seed,
+            "cameras": self._cameras_latest(),
             "components": self._component_health(),
             "pipeline": dict(self._pipeline.health()) if self._pipeline else {},
             "api": self.api_url,
@@ -211,8 +246,13 @@ class SystemApp:
         handlers = build_default_handlers(
             storage_sink=self._event_sink,
             alert_sink=self._alert_sink,
-            event_rules=[ZoneEntryRule(cfg.zones)],
-            track_fn=make_track_fn(cfg.zones),
+            event_rules=[ZoneEntryRule(cfg.effective_zones())],
+            track_fn=make_track_fn(
+                cfg.effective_zones(),
+                {c.camera_id: c.zones for c in cfg.cameras}
+                if cfg.multi_camera
+                else None,
+            ),
         )
         api = cfg.api
         if api.enabled:
@@ -244,16 +284,34 @@ class SystemApp:
 
     async def _start_components(self) -> None:
         cfg = self.config
-        self._register(FusionService(self._hub, cfg))
+        self._factory, self._uri = self._build_source_factory()
+        self._register(FusionService(self._hub, cfg, self._ps))
+        self._register(CameraStatusPublisher(self._hub, cfg, self._streams))
+        if self._fake_factory is not None and cfg.multi_camera:
+            self._register(
+                ScenarioDirector(self._hub, cfg, self._fake_factory, seed=self._seed)
+            )
         tag = cfg.tag.kind
         if tag == "sim":
-            self._register(LocationSimulator(self._hub, cfg))
+            self._register(
+                LocationSimulator(
+                    self._hub, cfg, pseudonymizer=self._ps, scene=self._scene
+                )
+            )
         elif tag == "replay":
-            self._register(TagReplay(self._hub, cfg))
+            self._register(TagReplay(self._hub, cfg, pseudonymizer=self._ps))
         elif tag == "c6":
             self._register(self._c6_fallback())
         if cfg.identity.kind == "sim":
-            self._register(IdentitySimulator(self._hub, cfg))
+            self._register(
+                IdentitySimulator(
+                    self._hub,
+                    cfg,
+                    pseudonymizer=self._ps,
+                    scene=self._scene,
+                    seed=self._seed,
+                )
+            )
         if cfg.actuator.kind == "sim":
             self._register(ActuatorSimulator(self._hub, cfg))
         for component in self._components:
@@ -282,7 +340,8 @@ class SystemApp:
         if self._source_factory is not None:
             return self._source_factory, PLACEHOLDER_URI
         if cam.kind == "fake":
-            return fake_source_factory(cam.stream_id, cam.fps), PLACEHOLDER_URI
+            self._fake_factory = fake_source_factory(self.config.camera_specs())
+            return self._fake_factory, PLACEHOLDER_URI
         if cam.kind == "file":
             return FileSourceFactory(cam.path, cam.fps), PLACEHOLDER_URI
         return opencv_source_factory, f"usb:{cam.device_index}"
@@ -291,50 +350,88 @@ class SystemApp:
         cfg = self.config
         loop = asyncio.get_running_loop()
         await loop.run_in_executor(None, self._detection.prepare)
-        factory, uri = self._build_source_factory()
+        assert self._factory is not None
+        factory, uri = self._factory, self._uri
         publisher = MetadataPublisher(self._hub, loop, source="pipeline")
         self._pipeline = LiveVideoPipeline(
             factory,
             config=PipelineConfig(
-                backoff=BackoffPolicy(initial=1.0, maximum=10.0),
+                backoff=(
+                    BackoffPolicy(initial=0.25, maximum=2.0)
+                    if cfg.camera.kind == "fake"
+                    else BackoffPolicy(initial=1.0, maximum=10.0)
+                ),
                 join_timeout=cfg.shutdown_timeout_s,
             ),
             processor=self._detection.processor,
             publisher=publisher,
         )
-        self._pipeline.add_source(StreamSource(cfg.camera.stream_id, uri))
+        for spec in cfg.camera_specs():
+            self._pipeline.add_source(StreamSource(spec.camera_id, uri))
         await loop.run_in_executor(None, self._pipeline.start)
 
     # ----------------------------------------------------------------- salud
 
+    def _streams(self) -> Mapping[str, Mapping[str, Any]]:
+        """Salud por stream del pipeline (fuente de ``CameraStatusPublisher``)."""
+        if self._pipeline is None:
+            return {}
+        streams = self._pipeline.health().get("streams", {})
+        return streams if isinstance(streams, Mapping) else {}
+
+    def _cameras_latest(self) -> list[dict[str, Any]]:
+        publisher = self._by_name.get("cameras")
+        return publisher.latest if isinstance(publisher, CameraStatusPublisher) else []
+
     def _camera_health(self) -> dict[str, Any]:
-        cam = self.config.camera
-        base: dict[str, Any] = {"kind": cam.kind, "stream_id": cam.stream_id}
+        """Estado agregado de las cámaras (el detalle por cámara va en ``cameras``)."""
+        cfg = self.config
+        specs = cfg.camera_specs()
+        base: dict[str, Any] = {
+            "kind": cfg.camera.kind,
+            "stream_id": specs[0].camera_id,
+            "total": len(specs),
+        }
         if self._pipeline is None:
             return {**base, "status": "stopped", "detail": "pipeline detenido"}
-        try:
-            h = self._pipeline.stream_health(cam.stream_id).to_payload()
-        except KeyError:
-            return {**base, "status": "stopped", "detail": "sin stream"}
-        state = h["state"]
+        streams = self._streams()
+        ok = starting = stopped = 0
+        problems: list[str] = []
+        received = dropped = 0
+        stream_state = None
+        for spec in specs:
+            stream = streams.get(spec.camera_id)
+            if stream is None:
+                problems.append(f"{spec.name}: sin stream")
+                continue
+            state = camera_state(stream)
+            received += int(stream.get("frames_received") or 0)
+            dropped += int(stream.get("frames_dropped") or 0)
+            stream_state = stream.get("state")
+            if stream_state == "stopped":
+                stopped += 1
+            elif state[0] == "ok":
+                ok += 1
+            elif stream_state in ("idle", "connecting") and not stream.get(
+                "last_error"
+            ):
+                starting += 1
+            else:
+                problems.append(f"{spec.name}: {state[0]} ({state[1]})")
         base.update(
-            frames_received=h["frames_received"],
-            frames_dropped=h["frames_dropped"],
-            retry_count=h["retry_count"],
-            last_error=h["last_error"],
-            stream_state=state,
+            ok=ok,
+            frames_received=received,
+            frames_dropped=dropped,
+            stream_state=stream_state,
+            last_error=problems[0] if problems else None,
         )
-        if state == "connected":
-            return {**base, "status": "ok", "detail": "recibiendo frames"}
-        if state == "stopped":
+        if stopped == len(specs):
             return {**base, "status": "stopped", "detail": "pipeline detenido"}
-        if state in ("idle", "connecting") and not h["last_error"]:
-            return {**base, "status": "starting", "detail": state}
-        return {
-            **base,
-            "status": "degraded",
-            "detail": h["last_error"] or state,
-        }
+        if problems:
+            return {**base, "status": "degraded", "detail": "; ".join(problems)}
+        if starting:
+            return {**base, "status": "starting", "detail": f"{ok}/{len(specs)} ok"}
+        return {**base, "status": "ok", "detail": "recibiendo frames"}
 
     def _component_health(self) -> dict[str, dict[str, Any]]:
         cfg = self.config
@@ -346,6 +443,9 @@ class SystemApp:
         out["fusion"] = (
             fusion.health() if fusion else {"status": "stopped", "detail": ""}
         )
+        director = self._by_name.get("scenarios")
+        if director is not None:
+            out["scenarios"] = director.health()
         provided = {
             "location": (self._by_name.get("location"), cfg.tag.kind),
             "identity": (self._by_name.get("identity"), cfg.identity.kind),

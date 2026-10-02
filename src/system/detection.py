@@ -50,8 +50,12 @@ def clean_detections(raw: Any) -> tuple[list[dict[str, Any]], int]:
         if len(box) != 4 or not all(math.isfinite(v) for v in (*box, item["conf"])):
             dropped += 1
             continue
-        if isinstance(det.get("label"), str):
-            item["label"] = det["label"]
+        for key in ("label", "stream_id", "frame_ts"):
+            if isinstance(det.get(key), str):
+                item[key] = det[key]
+        track_id = det.get("track_id")
+        if isinstance(track_id, int) and not isinstance(track_id, bool):
+            item["track_id"] = track_id
         out.append(item)
     return out, dropped
 
@@ -102,6 +106,10 @@ def build_detector(cfg: DetectorConfig) -> Detector | None:
         return FakeDetector(latency_ms=1.0)
     if cfg.kind == "moving":
         return MovingDetector()
+    if cfg.kind == "scenes":
+        raise ValueError(
+            'El detector "scenes" requiere camera.kind = "fake" y [[cameras]]'
+        )
     return build_yolo(cfg)
 
 
@@ -166,7 +174,12 @@ class RunnerDetector:
             if detector is None or self._closing:
                 return None
             try:
-                raw = detector.infer(frame.data)
+                infer_stream = getattr(detector, "infer_stream", None)
+                raw = (
+                    infer_stream(stream_id, frame.data)
+                    if infer_stream is not None
+                    else detector.infer(frame.data)
+                )
             except Exception as exc:  # noqa: BLE001 - un frame malo no tumba el pipeline
                 self._degrade(exc)
                 return None

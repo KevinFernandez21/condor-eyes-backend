@@ -8,11 +8,14 @@ El frame sigue viviendo solo en el plano de video.
 from __future__ import annotations
 
 import time
+from collections.abc import Sequence
 from pathlib import Path
 from typing import Any
 
 from pipeline import Frame, SourceError, StreamSource
 from pipeline.fake import FakeSourceFactory
+
+from .config import CameraSpec
 
 PLACEHOLDER_URI = "usb:0"
 """URI válida que exige ``StreamSource``; la fuente de archivo no la usa."""
@@ -74,9 +77,11 @@ class FileSourceFactory:
         return FileFrameSource(self._path, self._fps)
 
 
-def fake_source_factory(stream_id: str, fps: float) -> FakeSourceFactory:
-    """Cámara sintética de 640x480 a ``fps`` (el frame es un buffer mínimo)."""
-    factory = FakeSourceFactory(default_interval=1.0 / fps)
-    camera = factory.camera(stream_id)
-    camera.width, camera.height = 640, 480
+def fake_source_factory(cameras: Sequence[CameraSpec]) -> FakeSourceFactory:
+    """Una cámara sintética por especificación (resolución y fps propios)."""
+    factory = FakeSourceFactory()
+    for spec in cameras:
+        camera = factory.camera(spec.camera_id)
+        camera.width, camera.height = spec.width or 640, spec.height or 480
+        camera.interval = 1.0 / spec.fps
     return factory

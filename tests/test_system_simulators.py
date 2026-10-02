@@ -127,14 +127,45 @@ def test_tracker_mantiene_id_estable_y_crea_otro_para_nuevo():
     assert t1[0]["track_ref"].startswith("cam/")
 
 
-def test_tracker_ignora_clases_que_no_son_persona_y_olvida_tracks_viejos():
+def test_tracker_sigue_cualquier_clase_y_no_mezcla_clases():
+    tr = SimpleTracker()
+    first = tr.update(
+        "cam",
+        [
+            {"xyxy": [0, 0, 10, 10], "cls": 0, "conf": 0.9},
+            {"xyxy": [0, 0, 10, 10], "cls": 2, "conf": 0.9, "label": "car"},
+        ],
+    )
+    assert {t["cls"] for t in first} == {0, 2}
+    assert len({t["track_ref"] for t in first}) == 2
+    again = tr.update(
+        "cam",
+        [
+            {"xyxy": [1, 0, 11, 10], "cls": 2, "conf": 0.9},
+            {"xyxy": [1, 0, 11, 10], "cls": 0, "conf": 0.9},
+        ],
+    )
+    assert {t["track_ref"] for t in again} == {t["track_ref"] for t in first}
+    assert next(t for t in first if t["cls"] == 2)["label"] == "car"
+
+
+def test_tracker_ignora_cajas_invalidas_y_olvida_tracks_viejos():
     tr = SimpleTracker(max_age=2)
     first = tr.update("cam", [{"xyxy": [0, 0, 10, 10], "cls": 0, "conf": 0.9}])
-    assert tr.update("cam", [{"xyxy": [0, 0, 10, 10], "cls": 2, "conf": 0.9}]) == []
+    assert tr.update("cam", [{"xyxy": [0, 0, 10], "cls": 0, "conf": 0.9}]) == []
     tr.update("cam", [])
     tr.update("cam", [])
     again = tr.update("cam", [{"xyxy": [0, 0, 10, 10], "cls": 0, "conf": 0.9}])
     assert again[0]["track_ref"] != first[0]["track_ref"]
+
+
+def test_tracker_respeta_track_id_externo():
+    tr = SimpleTracker()
+    out = tr.update(
+        "cam-02",
+        [{"xyxy": [0, 0, 10, 10], "cls": 0, "conf": 0.9, "track_id": 42}],
+    )
+    assert out[0]["track_ref"] == "cam-02/42" and out[0]["track_id"] == 42
 
 
 def test_track_fn_asigna_zona_por_posicion_horizontal():
@@ -257,3 +288,92 @@ async def test_stop_es_idempotente_y_start_doble_falla(cls):
     await sim.stop()
     await sim.stop()
     await hub.close()
+
+
+# --- seudónimos y modo escena -------------------------------------------------
+
+
+def _scene(seed: int = 3, **overrides):
+    import dataclasses
+
+    from system.scenes import SceneSimulator
+
+    cfg = fast_config("sim")
+    scenes = dataclasses.replace(cfg.scenes, **overrides)
+    handles = tuple(cfg.permissions)
+    return cfg, SceneSimulator(cfg.cameras, scenes, handles=handles, seed=seed)
+
+
+async def test_ubicacion_legacy_publica_seudonimos_no_handles():
+    from system.pseudonym import Pseudonymizer
+
+    ps = Pseudonymizer(b"k")
+    sim = LocationSimulator(InMemoryHub(), fast_config("sim"), pseudonymizer=ps)
+    payloads = sim._payloads()
+    assert payloads
+    refs = {p["person_ref"] for p in payloads}
+    assert all(r.startswith("p-") and "person-sim" not in r for r in refs)
+    assert all(p["tag_ref"].startswith("tag-") for p in payloads)
+
+
+async def test_ubicacion_en_escena_sigue_a_su_persona_y_omite_sin_tag():
+    from system.pseudonym import Pseudonymizer
+    from system.scenes import Role
+
+    cfg, scene = _scene(
+        seed=4, stranger_ratio=0.0, no_tag_ratio=0.5, spawn_rate_per_s=3.0
+    )
+    ps = Pseudonymizer(b"k")
+    sim = LocationSimulator(InMemoryHub(), cfg, pseudonymizer=ps, scene=scene)
+    checked = False
+    for _ in range(400):
+        for cam in scene.camera_ids:
+            scene.step(cam)
+        holders = scene.holders()
+        payloads = {p["person_ref"]: p for p in sim._payloads()}
+        for handle, role in holders.items():
+            alias = ps.person(handle)
+            if role is Role.STAFF_NO_TAG:
+                assert alias not in payloads
+            else:
+                assert payloads[alias]["zone_id"] == scene.zone_of(handle)
+                checked = True
+    assert checked
+    zones = {z.zone_id for z in cfg.effective_zones()}
+    assert {p["zone_id"] for p in payloads.values()} <= zones
+
+
+async def test_identidad_en_escena_segun_perfil():
+    import dataclasses
+
+    from system.pseudonym import Pseudonymizer
+    from system.scenes import Role
+
+    cfg, scene = _scene(
+        seed=5, spawn_rate_per_s=3.0, stranger_ratio=0.4, no_tag_ratio=0.3
+    )
+    ps = Pseudonymizer(b"k")
+    sim = IdentitySimulator(InMemoryHub(), cfg, pseudonymizer=ps, scene=scene, seed=1)
+    statuses = set()
+    for _ in range(400):
+        for cam in scene.camera_ids:
+            for d in scene.step(cam):
+                if d["label"] != "person":
+                    continue
+                ref = f"{cam}/{d['track_id']}"
+                payload = sim._result(ref, tuple(cfg.permissions))
+                profile = scene.profile(ref)
+                assert payload is not None and payload["kind"] == "identity.result"
+                if profile.role is Role.STRANGER:
+                    assert (
+                        payload["status"] == "unknown" and payload["person_id"] is None
+                    )
+                else:
+                    assert payload["status"] in {"match", "no_face"}
+                    if payload["status"] == "match":
+                        assert payload["person_id"] == ps.person(profile.handle)
+                        assert payload["person_id"].startswith("p-")
+                statuses.add(payload["status"])
+                strict(payload)
+    assert {"match", "unknown"} <= statuses
+    del dataclasses

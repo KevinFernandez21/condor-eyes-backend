@@ -30,6 +30,7 @@ from fusion import (
 )
 
 from .config import SystemConfig
+from .pseudonym import Pseudonymizer
 from .simulators import IDENTITY_KIND, LOCATION_KIND, LOCATION_TOPIC, PeriodicComponent
 
 logger = logging.getLogger(__name__)
@@ -50,8 +51,14 @@ class FusionService(PeriodicComponent):
 
     name = "fusion"
 
-    def __init__(self, hub: MetadataHub, cfg: SystemConfig) -> None:
+    def __init__(
+        self,
+        hub: MetadataHub,
+        cfg: SystemConfig,
+        pseudonymizer: Pseudonymizer | None = None,
+    ) -> None:
         super().__init__(hub, cfg.fusion_interval_s, status="ok")
+        ps = pseudonymizer or Pseudonymizer.random()
         path = Path(cfg.fusion_config)
         if path.is_file():
             self._fusion_cfg: FusionConfig = load_fusion_config(path)
@@ -62,8 +69,10 @@ class FusionService(PeriodicComponent):
             self._detail = f"{path} no existe; se usan umbrales por defecto"
         self._engine = FusionEngine(
             self._fusion_cfg,
-            [ZoneRule(z.zone_id, z.restricted) for z in cfg.zones],
-            InMemoryPermissions({p: frozenset(z) for p, z in cfg.permissions.items()}),
+            [ZoneRule(z.zone_id, z.restricted) for z in cfg.effective_zones()],
+            InMemoryPermissions(
+                {ps.person(p): frozenset(z) for p, z in cfg.permissions.items()}
+            ),
         )
         self._tracks: dict[str, TrackObservation] = {}
         self._identities: dict[str, IdentityEvidence] = {}
@@ -119,6 +128,8 @@ class FusionService(PeriodicComponent):
             ref, zone = track.get("track_ref"), track.get("zone_id")
             if not isinstance(ref, str) or not isinstance(zone, str):
                 continue
+            if track.get("cls", 0) != 0:
+                continue  # la fusión de identidad solo trata personas
             self._tracks[ref] = TrackObservation(
                 evidence_id=envelope.event_id,
                 track_ref=ref,

@@ -178,3 +178,13 @@ def test_api_con_puerto_ocupado_sale_con_1_y_mensaje(capsys):
         blocker.close()
     assert code == 1
     assert f"puerto {port}" in capsys.readouterr().err
+
+
+def test_seed_se_acepta_y_se_imprime(capsys):
+    assert main(["--profile", "sim", "--seed", "123", "--duration", "1"]) == 0
+    assert "Semilla de la simulación: 123" in capsys.readouterr().out
+
+
+def test_sin_seed_se_imprime_la_elegida(capsys):
+    assert main(["--profile", "sim", "--duration", "1"]) == 0
+    assert "Semilla de la simulación: " in capsys.readouterr().out

@@ -37,19 +37,110 @@ restricted = true
 x_min = 0.5
 x_max = 1.0
 
-# Zonas permitidas por persona (la fusión las compara con la ubicación del tag).
+# Zonas permitidas por persona. Las claves son identificadores de simulación: antes de
+# publicarse se seudonimizan (HMAC -> p-xxxx), igual que el resto del bus.
+# lobby/vault son las zonas de los perfiles laptop/replay; el resto, las de la maqueta.
 [permissions]
-person-sim-01 = ["lobby", "vault"]
-person-sim-02 = ["lobby"]
+person-sim-01 = ["entrada-acceso", "entrada-control", "bodega-pasillo", "bodega-almacen", "lobby", "vault"]
+person-sim-02 = ["entrada-acceso", "bodega-pasillo", "estac-vehiculos", "estac-acceso", "lobby"]
+person-sim-03 = ["entrada-acceso", "perimetro-camino", "estac-vehiculos", "estac-acceso"]
+person-sim-04 = ["entrada-acceso", "bodega-pasillo", "perimetro-camino", "estac-vehiculos"]
+
+# --- Maqueta multicámara (solo la usa camera.kind = "fake", perfil sim) ---------
+# Cada cámara tiene nombre visible, escena, resolución y zonas (franjas horizontales).
+# Los zone_id son únicos entre cámaras.
+[[cameras]]
+camera_id = "cam-01"
+name = "Entrada"
+scene = "Acceso principal y control"
+fps = 10.0
+width = 1920
+height = 1080
+[[cameras.zones]]
+zone_id = "entrada-acceso"
+restricted = false
+x_min = 0.0
+x_max = 0.5
+[[cameras.zones]]
+zone_id = "entrada-control"
+restricted = true
+x_min = 0.5
+x_max = 1.0
+
+[[cameras]]
+camera_id = "cam-02"
+name = "Bodega"
+scene = "Pasillo y almacén"
+fps = 10.0
+width = 1920
+height = 1080
+[[cameras.zones]]
+zone_id = "bodega-pasillo"
+restricted = false
+x_min = 0.0
+x_max = 0.45
+[[cameras.zones]]
+zone_id = "bodega-almacen"
+restricted = true
+x_min = 0.45
+x_max = 1.0
+
+[[cameras]]
+camera_id = "cam-03"
+name = "Perímetro"
+scene = "Cerca norte y camino de ronda"
+fps = 10.0
+width = 1920
+height = 1080
+[[cameras.zones]]
+zone_id = "perimetro-cerca"
+restricted = true
+x_min = 0.0
+x_max = 0.3
+[[cameras.zones]]
+zone_id = "perimetro-camino"
+restricted = false
+x_min = 0.3
+x_max = 1.0
+
+[[cameras]]
+camera_id = "cam-04"
+name = "Estacionamiento"
+scene = "Plazas y acceso vehicular"
+fps = 10.0
+width = 1920
+height = 1080
+[[cameras.zones]]
+zone_id = "estac-vehiculos"
+restricted = false
+x_min = 0.0
+x_max = 0.7
+[[cameras.zones]]
+zone_id = "estac-acceso"
+restricted = false
+x_min = 0.7
+x_max = 1.0
 
 # --- sim: sin hardware. Cámara falsa, tag, identidad y actuador simulados. ---
 [profiles.sim.camera]
-kind = "fake"
-stream_id = "cam-01"
+kind = "fake"                   # con [[cameras]] definidas: una cámara sintética por entrada
+stream_id = "cam-01"            # solo se usa si no hay [[cameras]]
 fps = 10.0
 
 [profiles.sim.detector]
-kind = "moving"                 # dos personas sintéticas; "fake" = FakeDetector estático
+kind = "scenes"                 # personas, vehículos y movimiento por cámara; "moving" = 2 personas
+
+# Escenas aleatorias (semilla: --seed; sin ella se elige una y se imprime al arrancar).
+[profiles.sim.scenes]
+spawn_rate_per_s = 0.35         # altas por segundo y cámara
+max_actors = 4                  # simultáneos por cámara
+vehicle_ratio = 0.25
+motion_ratio = 0.1              # movimiento sin clase
+stranger_ratio = 0.2            # persona sin tag ni rostro conocido (intrusión)
+no_tag_ratio = 0.15             # persona conocida sin tag
+dropouts = true                 # caídas y recuperaciones de cámara
+dropout_interval_s = 30.0       # media entre caídas
+dropout_duration_s = 6.0
 
 [profiles.sim.tag]
 kind = "sim"

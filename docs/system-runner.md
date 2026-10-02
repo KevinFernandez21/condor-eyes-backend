@@ -40,7 +40,7 @@ fuente ─► LiveVideoPipeline ─► Detector ─►  MetadataPublisher ─►
 
 | Perfil | Cámara | Detector | Tag | Identidad | Actuador |
 |---|---|---|---|---|---|
-| `sim` | `fake` 640x480 | `moving` (2 personas sintéticas) | `sim` | `sim` | `sim` |
+| `sim` | `fake` x4 (1920x1080, `[[cameras]]`) | `scenes` (personas, vehículos, movimiento) | `sim` | `sim` | `sim` |
 | `laptop` | `webcam` (índice 0) | `yolov8n` (`configs/surveillance.toml`) | `c6` | `none` | `sim` |
 | `replay` | `file` (`data/replay/clip.mp4`) | `yolov8n` | `replay` (`data/replay/tags.jsonl`) | `none` | `none` |
 
@@ -59,6 +59,93 @@ se repite en bucle):
 El video de `replay` se reproduce en bucle a `fps`. Como `StreamSource` solo
 acepta RTSP/USB, la fuente de archivo usa la URI placeholder `usb:0` y la
 ignora (ver `system/sources.py`).
+
+## Maqueta multicámara (perfil `sim`)
+
+`uv run python scripts/run_system.py --profile sim --api [--seed N]` simula 4
+cámaras a 1920x1080 definidas en `[[cameras]]` de `configs/system.toml`
+(`cam-01` Entrada, `cam-02` Bodega, `cam-03` Perímetro, `cam-04`
+Estacionamiento), cada una con sus zonas (franjas horizontales; los `zone_id`
+son únicos entre cámaras y alguna es `restricted`).
+
+- **Escenas**: por cámara aparecen personas, vehículos (`car`, `truck`, `bus`) y
+  movimiento sin clase (`cls = -1`, `label = "motion"`) con cajas `xyxy`
+  realistas (persona alta, vehículo ancho) que cruzan el encuadre; algunas
+  personas se detienen unos segundos. Parámetros en `[profiles.sim.scenes]`.
+- **Semilla**: cada cámara tiene su propio generador sembrado con
+  `--seed` + `camera_id` y avanza por frame, así que la secuencia de cada
+  cámara es reproducible. Sin `--seed` se elige una al azar y se imprime
+  (`Semilla de la simulación: N`; también en `snapshot()["seed"]`).
+- **Eventos aleatorios**: cada persona tiene un perfil: `staff` (conocida, con
+  tag), `staff_no_tag` (conocida, sin tag: "persona sin tag") o `stranger`
+  (rostro desconocido y sin tag: intrusión si entra en una zona restringida);
+  a veces el rostro queda tapado (`no_face`). Además hay **caídas y
+  recuperaciones de cámara** (`dropouts`, `dropout_interval_s`,
+  `dropout_duration_s`).
+- **Seudónimos**: los identificadores de simulación (`person-sim-01`) nunca
+  llegan al bus: se publican como `p-xxxx` (persona) y `tag-xxxxxxxx` (tag),
+  HMAC-SHA256 con una clave derivada de la semilla. Los permisos de la fusión se
+  seudonimizan igual. En `replay`, el JSONL usa esos identificadores de
+  simulación y también se seudonimizan.
+
+### Formas de payload (solo metadata, JSON estricto)
+
+**Detecciones** (`Topic.DETECTIONS`, `stream_id` del envelope = `camera_id`).
+Payload de frame del pipeline:
+
+```json
+{"stream_id": "cam-01", "frame_index": 120, "timestamp": "2026-10-02T12:00:00.100000+00:00",
+ "width": 1920, "height": 1080,
+ "detections": [
+   {"stream_id": "cam-01", "track_id": 7, "cls": 0, "label": "person", "conf": 0.912,
+    "xyxy": [812.4, 402.1, 901.0, 655.3], "frame_ts": "2026-10-02T12:00:00.099000+00:00"}]}
+```
+
+`cls` sigue `surveillance.classes.NAMES` (0 persona, 2 coche, 4 bus, 5 camión) o
+`-1` para movimiento sin clase (`label: "motion"`). `track_id` es el id de la
+fuente (estable mientras el objeto vive).
+
+**Tracks** (`Topic.TRACKS`): `{"stream_id", "frame_index", "timestamp", "tracks":
+[{"track_ref": "cam-01/7", "track_id": 7, "stream_id", "cls", "label", "conf",
+"xyxy", "zone_id"}]}`.
+
+**Estado de cámara** (`Topic.STREAM_STATUS`, uno por cámara cada
+`min(1 s, heartbeat_interval_s)`; `stream_id` = `camera_id`; el pipeline también
+publica en este tópico su salud cruda de stream **sin** `kind`: filtre por
+`kind == "camera.status"`):
+
+```json
+{"kind": "camera.status", "camera_id": "cam-02", "stream_id": "cam-02",
+ "name": "Bodega", "scene": "Pasillo y almacén",
+ "zones": [{"zone_id": "bodega-pasillo", "restricted": false},
+           {"zone_id": "bodega-almacen", "restricted": true}],
+ "fps": 10.0, "measured_fps": 9.8,
+ "state": "ok", "stream_state": "connected",
+ "resolution": {"width": 1920, "height": 1080},
+ "frames_received": 1423, "last_frame_at": "2026-10-02T12:00:00.100000+00:00",
+ "last_error": null, "simulated": true}
+```
+
+`state`: `ok` (conectada), `degraded` (reconectando) u `offline` (3 o más
+reintentos fallidos, `failed` o `stopped`). En `laptop`/`replay` hay una sola
+cámara con `resolution` en `null`.
+
+**Eventos y decisiones** (`Topic.EVENTS`): `track.zone_entered`
+(`{"kind", "track_ref", "zone_id", "label", "from_zone", "restricted",
+"stream_id"}`) y decisiones de fusión (`decision_id`, `outcome`,
+`reason_codes` como `unknown_face`, `person_without_tag`,
+`zone_not_permitted`, `person_id` seudonimizado).
+
+**Telemetría de sensores** (`Topic.HEALTH`, distinguida por `kind`):
+`location.estimate`, `identity.result`, `ptz.command`, `ptz.health`,
+`component.health`.
+
+### `/health` y `/agents`
+
+`/health` cuenta solo los 7 roles: `agents_total` / `agents_running` /
+`agents_failed`. Los componentes del ejecutor se informan aparte:
+`components_total`, `components_ok` (`ok`/`simulated`) y `components_degraded`
+(`degraded`/`offline`/`failed`). `/agents` los lista con `role: "component"`.
 
 ## Degradación elegante
 

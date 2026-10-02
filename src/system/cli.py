@@ -65,6 +65,12 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
         help="token de la API (o variable CONDOR_API_TOKEN); obligatorio fuera de loopback",
     )
+    parser.add_argument(
+        "--seed",
+        type=int,
+        default=None,
+        help="semilla de la simulación (escenas, caídas, seudónimos); aleatoria por defecto",
+    )
     parser.add_argument("--config", type=Path, default=DEFAULT_CONFIG_PATH)
     parser.add_argument("--verbose", action="store_true", help="logs DEBUG")
     parser.add_argument(
@@ -96,6 +102,10 @@ def format_summary(summary: dict[str, Any]) -> str:
     return "\n".join(lines)
 
 
+def config_is_sim(app: SystemApp) -> bool:
+    return app.config.camera.kind == "fake"
+
+
 async def _run(app: SystemApp, duration: float | None) -> dict[str, Any]:
     loop = asyncio.get_running_loop()
     stop = asyncio.Event()
@@ -118,6 +128,8 @@ async def _run(app: SystemApp, duration: float | None) -> dict[str, Any]:
             f"Sistema en marcha (perfil {app.config.profile}). Ctrl+C para detener.",
             flush=True,
         )
+        if config_is_sim(app):
+            print(f"Semilla de la simulación: {app.seed}", flush=True)
         if app.api_url:
             print(f"API de observabilidad: {app.api_url}", flush=True)
         waiter = asyncio.ensure_future(stop.wait())
@@ -166,7 +178,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         except ConfigurationError as exc:
             print(f"Error de configuración de la API: {exc}", file=sys.stderr)
             return EXIT_CONFIG
-    app = SystemApp(config, api_token=token)
+    app = SystemApp(config, api_token=token, seed=args.seed)
     try:
         snapshot = asyncio.run(_run(app, args.duration))
     except Exception as exc:

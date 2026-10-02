@@ -200,3 +200,20 @@ async def test_puerto_ocupado_falla_con_mensaje_claro_y_apaga_limpio():
         assert other_tasks() - tasks == set()
     finally:
         blocker.close()
+
+
+async def test_health_cuenta_solo_los_siete_roles_y_separa_componentes():
+    app = SystemApp(api_config(), plugins=no_plugins())
+    await app.start()
+    try:
+        await wait_for(lambda: len(app.view.agents()) > 7)
+        health = (await get(app.api_url, "/health")).json()
+        assert health["agents_total"] == 7
+        assert health["agents_running"] == 7
+        assert health["agents_failed"] == 0
+        assert health["components_total"] >= 6
+        assert health["components_ok"] >= 1
+        assert health["components_total"] >= health["components_ok"]
+        assert health["status"] == "ok"
+    finally:
+        await app.stop()

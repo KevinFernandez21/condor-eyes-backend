@@ -38,12 +38,18 @@ def _finite_box(raw: Any) -> list[float] | None:
 
 
 class SimpleTracker:
-    """Asociación voraz por IoU con envejecimiento; un espacio de ids por stream."""
+    """Seguimiento por IoU (misma clase) con envejecimiento; ids por stream.
+
+    Si la detección ya trae ``track_id`` (fuente pre-rastreada, como las escenas
+    sintéticas) se respeta y el ``track_ref`` es ``<stream>/<track_id>``; el
+    resto se asocia por IoU. Sigue cualquier clase (personas, vehículos y
+    movimiento sin clase); la fusión filtra las personas.
+    """
 
     def __init__(self, *, iou_min: float = 0.2, max_age: int = 10) -> None:
         self._iou_min = iou_min
         self._max_age = max_age
-        # stream_id -> {numero: [caja, edad sin ver]}
+        # stream_id -> {numero: [caja, edad sin ver, clase]}
         self._tracks: dict[str, dict[int, list[Any]]] = {}
         self._next: dict[str, int] = {}
 
@@ -51,18 +57,25 @@ class SimpleTracker:
         self, stream_id: str, detections: Sequence[Mapping[str, Any]]
     ) -> list[dict[str, Any]]:
         tracks = self._tracks.setdefault(stream_id, {})
-        boxes = []
+        out: list[dict[str, Any]] = []
+        boxes: list[tuple[list[float], float, int, Any]] = []
         for det in detections:
-            if det.get("cls") != PERSON_CLASS:
-                continue
             box = _finite_box(det.get("xyxy"))
-            if box is not None:
-                boxes.append((box, float(det.get("conf", 0.0))))
+            cls = det.get("cls")
+            if box is None or isinstance(cls, bool) or not isinstance(cls, int):
+                continue
+            conf = float(det.get("conf", 0.0))
+            external = det.get("track_id")
+            if isinstance(external, int) and not isinstance(external, bool):
+                out.append(self._track(stream_id, external, box, cls, conf, det))
+            else:
+                boxes.append((box, conf, cls, det))
         pairs = sorted(
             (
                 (_iou(info[0], box), number, index)
                 for number, info in tracks.items()
-                for index, (box, _) in enumerate(boxes)
+                for index, (box, _, cls, _) in enumerate(boxes)
+                if info[2] == cls
             ),
             reverse=True,
         )
@@ -75,7 +88,6 @@ class SimpleTracker:
                 continue
             assigned[number] = index
             used.add(index)
-        out: list[dict[str, Any]] = []
         for number in list(tracks):
             if number in assigned:
                 tracks[number][0] = boxes[assigned[number]][0]
@@ -84,24 +96,36 @@ class SimpleTracker:
                 tracks[number][1] += 1
                 if tracks[number][1] > self._max_age:
                     del tracks[number]
-        for index, (box, conf) in enumerate(boxes):
+        for index, (box, conf, cls, det) in enumerate(boxes):
             found = next((n for n, i in assigned.items() if i == index), None)
             if found is None:
                 number = self._next.get(stream_id, 0) + 1
                 self._next[stream_id] = number
-                tracks[number] = [box, 0]
+                tracks[number] = [box, 0, cls]
             else:
                 number = found
-            out.append(
-                {
-                    "track_ref": f"{stream_id}/{number}",
-                    "track_id": number,
-                    "xyxy": box,
-                    "cls": PERSON_CLASS,
-                    "conf": conf,
-                }
-            )
+            out.append(self._track(stream_id, number, box, cls, conf, det))
         return out
+
+    @staticmethod
+    def _track(
+        stream_id: str,
+        number: int,
+        box: list[float],
+        cls: int,
+        conf: float,
+        det: Mapping[str, Any],
+    ) -> dict[str, Any]:
+        track: dict[str, Any] = {
+            "track_ref": f"{stream_id}/{number}",
+            "track_id": number,
+            "xyxy": box,
+            "cls": cls,
+            "conf": conf,
+        }
+        if isinstance(det.get("label"), str):
+            track["label"] = det["label"]
+        return track
 
 
 def zone_for(zones: Sequence[ZoneConfig], center_x: float) -> ZoneConfig | None:
@@ -112,8 +136,14 @@ def zone_for(zones: Sequence[ZoneConfig], center_x: float) -> ZoneConfig | None:
     return zones[-1] if zones and center_x >= 1.0 else None
 
 
-def make_track_fn(zones: Sequence[ZoneConfig]) -> TrackFn:
-    """``TrackFn`` con estado: detecciones de un frame -> tracks con zona."""
+def make_track_fn(
+    zones: Sequence[ZoneConfig],
+    by_stream: Mapping[str, Sequence[ZoneConfig]] | None = None,
+) -> TrackFn:
+    """``TrackFn`` con estado: detecciones de un frame -> tracks con zona.
+
+    ``by_stream`` da zonas propias por cámara; ``zones`` es el valor por defecto.
+    """
     tracker = SimpleTracker()
 
     def track_fn(envelope: MetadataEnvelope) -> Mapping[str, Any]:
@@ -121,9 +151,10 @@ def make_track_fn(zones: Sequence[ZoneConfig]) -> TrackFn:
         stream_id = str(envelope.stream_id or payload.get("stream_id") or "stream")
         width = float(payload.get("width") or 0) or 1.0
         tracks = tracker.update(stream_id, list(payload.get("detections", [])))
+        stream_zones = by_stream.get(stream_id, zones) if by_stream else zones
         for track in tracks:
             x0, _, x1, _ = track["xyxy"]
-            zone = zone_for(zones, ((x0 + x1) / 2.0) / width)
+            zone = zone_for(stream_zones, ((x0 + x1) / 2.0) / width)
             track["zone_id"] = zone.zone_id if zone else None
             track["stream_id"] = stream_id
         return {
@@ -148,6 +179,8 @@ class ZoneEntryRule:
         events: list[dict[str, Any]] = []
         for track in envelope.payload.get("tracks", []):
             ref, zone = track.get("track_ref"), track.get("zone_id")
+            if track.get("cls") == -1:
+                continue  # movimiento sin clase: no es un evento de zona
             if not isinstance(ref, str) or self._last.get(ref, "") == zone:
                 continue
             previous = self._last.get(ref)
@@ -157,6 +190,7 @@ class ZoneEntryRule:
                     "kind": "track.zone_entered",
                     "track_ref": ref,
                     "zone_id": zone,
+                    "label": track.get("label"),
                     "from_zone": previous,
                     "restricted": bool(self._restricted.get(zone or "", False)),
                     "stream_id": envelope.stream_id,

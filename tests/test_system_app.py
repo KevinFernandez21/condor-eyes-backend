@@ -366,7 +366,10 @@ async def test_replay_con_video_y_jsonl(tmp_path):
                     for _, m in app.hub.history
                     if m.payload.get("kind") == "location.estimate"
                 }
-                >= {"person-sim-01", "person-sim-02"}
+                >= {
+                    app.pseudonymizer.person("person-sim-01"),
+                    app.pseudonymizer.person("person-sim-02"),
+                }
             )
         )
         assert app.snapshot()["components"]["camera"]["status"] == "ok"
@@ -533,5 +536,146 @@ async def test_detecciones_malformadas_se_descartan_y_se_cuentan():
         assert det["status"] == "ok"
         msg = next(m for t, m in app.hub.history if t is Topic.DETECTIONS)
         assert len(msg.payload["detections"]) == 1
+    finally:
+        await app.stop()
+
+
+# --- maqueta multicámara --------------------------------------------------------
+
+
+def camera_status(app: SystemApp) -> dict[str, dict]:
+    out: dict[str, dict] = {}
+    for topic, message in list(app.hub.history):
+        if (
+            topic is Topic.STREAM_STATUS
+            and message.payload.get("kind") == "camera.status"
+        ):
+            out[message.payload["camera_id"]] = message.payload
+    return out
+
+
+async def test_sim_corre_cuatro_camaras_con_metadata_y_detecciones():
+    cfg = fast_config("sim")
+    app = SystemApp(cfg, plugins=no_plugins(), seed=21)
+    await app.start()
+    try:
+        names = {c.camera_id: c.name for c in cfg.cameras}
+        assert len(names) == 4
+
+        def all_cameras_seen() -> bool:
+            streams = {
+                m.stream_id
+                for t, m in list(app.hub.history)
+                if t is Topic.DETECTIONS and m.payload["detections"]
+            }
+            return streams == set(names) and set(camera_status(app)) == set(names)
+
+        assert await wait_for(all_cameras_seen, timeout=15.0)
+        for camera_id, payload in camera_status(app).items():
+            assert payload["name"] == names[camera_id]
+            assert payload["resolution"] == {"width": 1920, "height": 1080}
+            assert payload["state"] == "ok"
+        shown = [
+            d
+            for t, m in list(app.hub.history)
+            if t is Topic.DETECTIONS
+            for d in m.payload["detections"]
+        ]
+        assert shown
+        for det in shown:
+            assert {
+                "stream_id",
+                "track_id",
+                "cls",
+                "label",
+                "conf",
+                "xyxy",
+                "frame_ts",
+            } <= set(det)
+        snap = app.snapshot()
+        assert snap["seed"] == 21
+        assert {c["camera_id"] for c in snap["cameras"]} == set(names)
+        assert snap["components"]["camera"]["status"] == "ok"
+    finally:
+        await app.stop()
+
+
+async def test_ningun_identificador_en_claro_en_el_bus():
+    app = SystemApp(fast_config("sim"), plugins=no_plugins(), seed=22)
+    await app.start()
+    await wait_for(lambda: bool(app.tap.decisions(1)), timeout=15.0)
+    await asyncio.sleep(0.5)
+    await app.stop()
+    blob = json.dumps([m.payload for _, m in app.hub.history])
+    assert "person-sim" not in blob
+    assert '"p-' in blob
+
+
+async def test_misma_semilla_misma_secuencia_de_detecciones():
+    async def first_frames(seed: int) -> list:
+        app = SystemApp(fast_config("sim"), plugins=no_plugins(), seed=seed)
+        await app.start()
+        await wait_for(
+            lambda: (
+                sum(
+                    1
+                    for t, m in list(app.hub.history)
+                    if t is Topic.DETECTIONS and m.stream_id == "cam-01"
+                )
+                >= 40
+            )
+        )
+        await app.stop()
+        frames = [
+            [(d["track_id"], d["label"], d["xyxy"]) for d in m.payload["detections"]]
+            for t, m in app.hub.history
+            if t is Topic.DETECTIONS and m.stream_id == "cam-01"
+        ]
+        return frames[:40]
+
+    assert await first_frames(5) == await first_frames(5)
+
+
+async def test_caida_y_recuperacion_de_camara():
+    import dataclasses
+
+    cfg = fast_config("sim")
+    cfg = dataclasses.replace(
+        cfg,
+        scenes=dataclasses.replace(
+            cfg.scenes, dropouts=True, dropout_interval_s=0.4, dropout_duration_s=0.8
+        ),
+    )
+    app = SystemApp(cfg, plugins=no_plugins(), seed=2)
+    await app.start()
+    try:
+
+        def states() -> dict[str, list[str]]:
+            seen: dict[str, list[str]] = {}
+            for t, m in list(app.hub.history):
+                if (
+                    t is Topic.STREAM_STATUS
+                    and m.payload.get("kind") == "camera.status"
+                ):
+                    seen.setdefault(m.payload["camera_id"], []).append(
+                        m.payload["state"]
+                    )
+            return seen
+
+        def recovered() -> bool:
+            for seq in states().values():
+                if "ok" not in seq:
+                    continue
+                rest = seq[seq.index("ok") :]
+                if any(x != "ok" for x in rest) and rest[-1] == "ok":
+                    return True
+            return False
+
+        assert await wait_for(recovered, timeout=25.0), states()
+        assert all(
+            a["state"] == "running"
+            for a in app.view.agents()
+            if a["role"] != "component"
+        )
     finally:
         await app.stop()

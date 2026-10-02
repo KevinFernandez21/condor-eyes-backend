@@ -20,14 +20,19 @@ import asyncio
 import json
 import logging
 import math
+import random
 from collections.abc import Callable, Mapping
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from bus import MetadataEnvelope, MetadataHub, Topic
 
 from .config import SystemConfig
+from .pseudonym import Pseudonymizer
+
+if TYPE_CHECKING:
+    from .scenes import SceneSimulator
 
 logger = logging.getLogger(__name__)
 
@@ -59,13 +64,14 @@ def location_payload(
     *,
     authorized: bool | None = None,
     node_id: str = "N0001",
+    tag_ref: str | None = None,
 ) -> dict[str, Any]:
     """Estimación ``located`` con la forma de ``location.bus_adapter.to_envelope``."""
     stamp = now.isoformat()
     return {
         "kind": LOCATION_KIND,
         "simulated": True,
-        "tag_ref": f"tag-{person_ref}",
+        "tag_ref": tag_ref or f"tag-{person_ref}",
         "person_ref": person_ref,
         "status": "located",
         "zone_id": zone_id,
@@ -114,15 +120,23 @@ def unknown_location_payload(reason: str, now: datetime) -> dict[str, Any]:
 
 
 def identity_payload(
-    track_ref: str, person_id: str, score: float, *, observed_at: datetime | None = None
+    track_ref: str,
+    person_id: str | None,
+    score: float,
+    *,
+    observed_at: datetime | None = None,
+    status: str = "match",
 ) -> dict[str, Any]:
-    """Resultado ``match`` con la forma de ``faceid.identity`` (sin embedding)."""
+    """Resultado con la forma de ``faceid.identity`` (sin embedding).
+
+    ``status``: ``match`` (con ``person_id``), ``unknown`` o ``no_face``.
+    """
     when = observed_at or _utc_now()
     return {
         "kind": IDENTITY_KIND,
         "simulated": True,
         "track_ref": track_ref,
-        "status": "match",
+        "status": status,
         "person_id": person_id,
         "score": score,
         "threshold": 0.65,
@@ -305,6 +319,8 @@ class LocationSimulator(PeriodicComponent):
         degraded_reason: str | None = None,
         detail: str = "",
         clock: Clock = _utc_now,
+        pseudonymizer: Pseudonymizer | None = None,
+        scene: SceneSimulator | None = None,
     ) -> None:
         super().__init__(
             hub,
@@ -315,6 +331,8 @@ class LocationSimulator(PeriodicComponent):
         self._cfg = cfg
         self._reason = degraded_reason
         self._clock = clock
+        self._ps = pseudonymizer or Pseudonymizer.random()
+        self._scene = scene
 
     @property
     def topic(self) -> Topic:
@@ -324,21 +342,46 @@ class LocationSimulator(PeriodicComponent):
         now = self._clock()
         if self._reason:
             return [unknown_location_payload(self._reason, now)]
+        if self._scene is not None:
+            return self._scene_payloads(now)
         zones = [z.zone_id for z in self._cfg.zones] or ["zone-1"]
         out = []
-        for index, person in enumerate(_people(self._cfg)):
+        for index, handle in enumerate(_people(self._cfg)):
             zone = zones[(len(zones) - 1 - index) % len(zones)]
-            allowed = self._cfg.permissions.get(person)
-            out.append(
-                location_payload(
-                    person,
-                    zone,
-                    0.9,
-                    now,
-                    authorized=None if allowed is None else zone in allowed,
-                    node_id=f"N{index + 1:04d}",
-                )
-            )
+            out.append(self._located(handle, zone, now, index))
+        return out
+
+    def _located(
+        self, handle: str, zone: str, now: datetime, index: int
+    ) -> dict[str, Any]:
+        allowed = self._cfg.permissions.get(handle)
+        return location_payload(
+            self._ps.person(handle),
+            zone,
+            0.9,
+            now,
+            authorized=None if allowed is None else zone in allowed,
+            node_id=f"N{index + 1:04d}",
+            tag_ref=self._ps.tag(handle),
+        )
+
+    def _scene_payloads(self, now: datetime) -> list[dict[str, Any]]:
+        """El tag acompaña a su persona; sin persona en escena queda en zona de reposo."""
+        from .scenes import Role
+
+        assert self._scene is not None
+        zones = self._cfg.effective_zones()
+        home = next((z.zone_id for z in zones if not z.restricted), None) or (
+            zones[0].zone_id if zones else "zone-1"
+        )
+        holders = self._scene.holders()
+        out = []
+        for index, handle in enumerate(_people(self._cfg)):
+            role = holders.get(handle)
+            if role is Role.STAFF_NO_TAG:
+                continue  # lleva la persona pero no el tag: no hay señal
+            zone = (self._scene.zone_of(handle) if role is Role.STAFF else None) or home
+            out.append(self._located(handle, zone, now, index))
         return out
 
     async def _tick(self) -> None:
@@ -355,7 +398,12 @@ class TagReplay(LocationSimulator):
     """
 
     def __init__(
-        self, hub: MetadataHub, cfg: SystemConfig, *, clock: Clock = _utc_now
+        self,
+        hub: MetadataHub,
+        cfg: SystemConfig,
+        *,
+        clock: Clock = _utc_now,
+        pseudonymizer: Pseudonymizer | None = None,
     ) -> None:
         self._entries, problem = self._load(cfg.tag.path)
         super().__init__(
@@ -364,6 +412,7 @@ class TagReplay(LocationSimulator):
             degraded_reason="tag_missing" if problem else None,
             detail=problem or f"{len(self._entries)} estimaciones de {cfg.tag.path}",
             clock=clock,
+            pseudonymizer=pseudonymizer,
         )
         if not problem:
             self._status = "ok"
@@ -422,7 +471,13 @@ class TagReplay(LocationSimulator):
         ):
             e = self._entries[self._cursor]
             out.append(
-                location_payload(e["person_ref"], e["zone_id"], e["confidence"], now)
+                location_payload(
+                    self._ps.person(e["person_ref"]),
+                    e["zone_id"],
+                    e["confidence"],
+                    now,
+                    tag_ref=self._ps.tag(e["person_ref"]),
+                )
             )
             self._cursor += 1
         if (
@@ -438,9 +493,20 @@ class IdentitySimulator(PeriodicComponent):
 
     name = "identity"
 
-    def __init__(self, hub: MetadataHub, cfg: SystemConfig) -> None:
+    def __init__(
+        self,
+        hub: MetadataHub,
+        cfg: SystemConfig,
+        *,
+        pseudonymizer: Pseudonymizer | None = None,
+        scene: SceneSimulator | None = None,
+        seed: int = 0,
+    ) -> None:
         super().__init__(hub, cfg.identity.interval_s, detail="identidad simulada")
         self._cfg = cfg
+        self._ps = pseudonymizer or Pseudonymizer.random()
+        self._scene = scene
+        self._rng = random.Random(f"{seed}:identity")
         self._seen: dict[str, tuple[str | None, float]] = {}
         self._subscription: Any = None
 
@@ -463,6 +529,8 @@ class IdentitySimulator(PeriodicComponent):
         async for envelope in subscription:
             for track in envelope.payload.get("tracks", []):
                 ref = track.get("track_ref")
+                if track.get("cls", 0) != 0:
+                    continue  # solo personas tienen rostro
                 if isinstance(ref, str):
                     self._seen[ref] = (envelope.stream_id, loop.time())
 
@@ -473,15 +541,27 @@ class IdentitySimulator(PeriodicComponent):
             if now - seen_at > 2.0:
                 del self._seen[ref]
                 continue
-            tail = ref.rsplit("/", 1)[-1]
-            number = int(tail) if tail.isdigit() else 1
-            person = people[(number - 1) % len(people)]
-            await self._publish(
-                self.topic,
-                "identity",
-                identity_payload(ref, person, 0.9),
-                stream_id=stream_id,
-            )
+            payload = self._result(ref, people)
+            if payload is None:
+                continue
+            await self._publish(self.topic, "identity", payload, stream_id=stream_id)
+
+    def _result(self, ref: str, people: tuple[str, ...]) -> dict[str, Any] | None:
+        if self._scene is not None:
+            profile = self._scene.profile(ref)
+            if profile is None or profile.role is None:
+                return None
+            from .scenes import Role
+
+            if profile.role is Role.STRANGER or profile.handle is None:
+                return identity_payload(ref, None, 0.2, status="unknown")
+            if self._rng.random() < 0.1:  # rostro tapado de vez en cuando
+                return identity_payload(ref, None, 0.0, status="no_face")
+            return identity_payload(ref, self._ps.person(profile.handle), 0.9)
+        tail = ref.rsplit("/", 1)[-1]
+        number = int(tail) if tail.isdigit() else 1
+        handle = people[(number - 1) % len(people)]
+        return identity_payload(ref, self._ps.person(handle), 0.9)
 
 
 class ActuatorSimulator(PeriodicComponent):

@@ -14,14 +14,14 @@ from __future__ import annotations
 import math
 import tomllib
 from collections.abc import Mapping
-from dataclasses import dataclass, field, fields
+from dataclasses import dataclass, field, fields, replace
 from pathlib import Path
 from typing import Any
 
 DEFAULT_CONFIG_PATH = Path(__file__).resolve().parents[2] / "configs" / "system.toml"
 
 CAMERA_KINDS = ("fake", "webcam", "file")
-DETECTOR_KINDS = ("fake", "moving", "yolov8n", "none")
+DETECTOR_KINDS = ("fake", "moving", "scenes", "yolov8n", "none")
 TAG_KINDS = ("sim", "c6", "replay", "none")
 IDENTITY_KINDS = ("sim", "none")
 ACTUATOR_KINDS = ("sim", "none")
@@ -69,6 +69,21 @@ class ActuatorConfig:
     interval_s: float = 1.0
 
 
+@dataclass(frozen=True, slots=True)
+class SceneConfig:
+    """Parámetros de las escenas sintéticas del perfil ``sim`` (semilla: CLI)."""
+
+    spawn_rate_per_s: float = 0.35  # altas por segundo y cámara
+    max_actors: int = 4  # simultáneos por cámara
+    vehicle_ratio: float = 0.25
+    motion_ratio: float = 0.1  # movimiento sin clase
+    stranger_ratio: float = 0.2  # persona sin tag ni rostro conocido
+    no_tag_ratio: float = 0.15  # persona conocida sin tag
+    dropouts: bool = True
+    dropout_interval_s: float = 30.0  # media entre caídas de cámara
+    dropout_duration_s: float = 6.0
+
+
 DEFAULT_ORIGINS = ("http://127.0.0.1:8080", "http://localhost:8080")
 
 
@@ -90,6 +105,19 @@ class ZoneConfig:
     restricted: bool = True
     x_min: float = 0.0
     x_max: float = 1.0
+
+
+@dataclass(frozen=True, slots=True)
+class CameraSpec:
+    """Cámara de la maqueta: identidad visible, resolución y zonas de su escena."""
+
+    camera_id: str
+    name: str
+    scene: str = ""
+    fps: float = 10.0
+    width: int = 1920
+    height: int = 1080
+    zones: tuple[ZoneConfig, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -120,9 +148,39 @@ class SystemConfig:
     tag: TagConfig = field(default_factory=TagConfig)
     identity: IdentityConfig = field(default_factory=IdentityConfig)
     actuator: ActuatorConfig = field(default_factory=ActuatorConfig)
+    scenes: SceneConfig = field(default_factory=SceneConfig)
     api: ApiConfig = field(default_factory=ApiConfig)
+    cameras: tuple[CameraSpec, ...] = ()
     zones: tuple[ZoneConfig, ...] = ()
     permissions: Mapping[str, tuple[str, ...]] = field(default_factory=dict)
+
+    @property
+    def multi_camera(self) -> bool:
+        """Cámaras sintéticas múltiples (``camera.kind = "fake"`` con ``[[cameras]]``)."""
+        return self.camera.kind == "fake" and bool(self.cameras)
+
+    def camera_specs(self) -> tuple[CameraSpec, ...]:
+        """Cámaras activas: las de la maqueta o la única del perfil."""
+        if self.multi_camera:
+            return self.cameras
+        cam = self.camera
+        return (
+            CameraSpec(
+                camera_id=cam.stream_id,
+                name=cam.stream_id,
+                scene=cam.kind,
+                fps=cam.fps,
+                width=0,
+                height=0,
+                zones=self.zones,
+            ),
+        )
+
+    def effective_zones(self) -> tuple[ZoneConfig, ...]:
+        """Zonas que usa la fusión: las de las cámaras de la maqueta o las globales."""
+        if self.multi_camera:
+            return tuple(z for c in self.cameras for z in c.zones)
+        return self.zones
 
 
 # --- validación -------------------------------------------------------------
@@ -136,6 +194,12 @@ _POSITIVE = {
     "recent_limit",
     "fps",
     "interval_s",
+    "spawn_rate_per_s",
+    "max_actors",
+    "dropout_interval_s",
+    "dropout_duration_s",
+    "width",
+    "height",
 }
 _MAXIMUM = {
     "heartbeat_interval_s": 3600.0,
@@ -147,6 +211,12 @@ _MAXIMUM = {
     "fps": 240.0,
     "interval_s": 3600.0,
     "device_index": 64,
+    "spawn_rate_per_s": 20.0,
+    "max_actors": 50,
+    "dropout_interval_s": 3600.0,
+    "dropout_duration_s": 3600.0,
+    "width": 8192,
+    "height": 8192,
     "port": 65535,
 }
 _KINDS = {
@@ -156,6 +226,53 @@ _KINDS = {
     "identity": IDENTITY_KINDS,
     "actuator": ACTUATOR_KINDS,
 }
+
+
+def _scenes(table: Mapping[str, Any], section: str) -> SceneConfig:
+    scenes: SceneConfig = _build(SceneConfig, section, table)
+    for key in ("vehicle_ratio", "motion_ratio", "stranger_ratio", "no_tag_ratio"):
+        if not 0.0 <= getattr(scenes, key) <= 1.0:
+            raise ConfigError(f"[{section}].{key} debe estar en [0, 1]")
+    if scenes.vehicle_ratio + scenes.motion_ratio > 1.0:
+        raise ConfigError(
+            f"[{section}]: vehicle_ratio + motion_ratio no puede superar 1"
+        )
+    if scenes.stranger_ratio + scenes.no_tag_ratio > 1.0:
+        raise ConfigError(
+            f"[{section}]: stranger_ratio + no_tag_ratio no puede superar 1"
+        )
+    return scenes
+
+
+def _cameras(raw: Any) -> tuple[CameraSpec, ...]:
+    if not isinstance(raw, list):
+        raise ConfigError("[[cameras]] debe ser una lista de tablas")
+    cameras: list[CameraSpec] = []
+    seen: set[str] = set()
+    zone_ids: set[str] = set()
+    for item in raw:
+        if (
+            not isinstance(item, Mapping)
+            or "camera_id" not in item
+            or "name" not in item
+        ):
+            raise ConfigError("Toda cámara requiere camera_id y name")
+        table = dict(item)
+        zones = _zones(table.pop("zones", []))
+        spec: CameraSpec = _build(
+            CameraSpec, "cameras", {k: v for k, v in table.items()}
+        )
+        if not spec.camera_id.strip() or not spec.name.strip():
+            raise ConfigError("camera_id y name no pueden estar vacíos")
+        if spec.camera_id in seen:
+            raise ConfigError(f"Cámara duplicada: {spec.camera_id!r}")
+        seen.add(spec.camera_id)
+        for zone in zones:
+            if zone.zone_id in zone_ids:
+                raise ConfigError(f"Zona duplicada entre cámaras: {zone.zone_id!r}")
+            zone_ids.add(zone.zone_id)
+        cameras.append(replace(spec, zones=zones))
+    return tuple(cameras)
 
 
 def _check_value(section: str, key: str, value: Any, expected: type) -> Any:
@@ -294,6 +411,7 @@ _SECTIONS = {
     "tag": TagConfig,
     "identity": IdentityConfig,
     "actuator": ActuatorConfig,
+    "scenes": SceneConfig,
 }
 
 
@@ -311,7 +429,7 @@ def load_system_config(
         raise ConfigError(f"TOML inválido en {config_path}: {exc}") from exc
 
     unknown_top = sorted(
-        set(raw) - {"system", "zones", "permissions", "profiles", "api"}
+        set(raw) - {"system", "zones", "permissions", "profiles", "api", "cameras"}
     )
     if unknown_top:
         raise ConfigError(f"Secciones desconocidas: {unknown_top}")
@@ -332,10 +450,22 @@ def load_system_config(
     unknown = sorted(set(table) - set(_SECTIONS))
     if unknown:
         raise ConfigError(f"Claves desconocidas en [profiles.{chosen}]: {unknown}")
-    sections = {
-        name: _build(cls, f"profiles.{chosen}.{name}", table.get(name, {}))
-        for name, cls in _SECTIONS.items()
-    }
+    sections: dict[str, Any] = {}
+    for name, cls in _SECTIONS.items():
+        where = f"profiles.{chosen}.{name}"
+        sections[name] = (
+            _scenes(table.get(name, {}), where)
+            if cls is SceneConfig
+            else _build(cls, where, table.get(name, {}))
+        )
+
+    if sections["detector"].kind == "scenes" and not (
+        sections["camera"].kind == "fake" and raw.get("cameras")
+    ):
+        raise ConfigError(
+            f'[profiles.{chosen}.detector] kind = "scenes" requiere '
+            'camera.kind = "fake" y al menos una [[cameras]]'
+        )
 
     base = config_path.resolve().parent.parent
     sections["camera"] = _replace_paths(sections["camera"], base, ("path",))
@@ -353,6 +483,7 @@ def load_system_config(
         recent_limit=system.recent_limit,
         fusion_config=_resolve(base, system.fusion_config),
         api=_api(raw.get("api", {})),
+        cameras=_cameras(raw.get("cameras", [])),
         zones=_zones(raw.get("zones", [])),
         permissions=_permissions(raw.get("permissions", {})),
         **sections,

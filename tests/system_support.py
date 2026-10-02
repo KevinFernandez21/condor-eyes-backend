@@ -21,6 +21,8 @@ def fast_config(profile: str = "sim", **overrides) -> SystemConfig:
         fusion_interval_s=0.1,
         shutdown_timeout_s=3.0,
         camera=dataclasses.replace(cfg.camera, fps=50.0),
+        cameras=tuple(dataclasses.replace(c, fps=50.0) for c in cfg.cameras),
+        scenes=dataclasses.replace(cfg.scenes, dropouts=False),
         tag=dataclasses.replace(cfg.tag, interval_s=0.05),
         identity=dataclasses.replace(cfg.identity, interval_s=0.05),
         actuator=dataclasses.replace(cfg.actuator, interval_s=0.05),
