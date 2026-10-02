@@ -6,6 +6,7 @@ from __future__ import annotations
 import json
 import math
 import sqlite3
+import sys
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -517,7 +518,7 @@ def test_embedder_benchmark_rejects_identity_leakage(tmp_path):
     from faceid.embed_benchmark import run_embedder
 
     e = SubjectEmbedder(0.1)
-    with pytest.raises(AssertionError, match="fuga"):
+    with pytest.raises(ValueError, match="fuga"):
         run_embedder(
             EmbedderEngine(SubjectDetector(), e),
             e,
@@ -536,3 +537,203 @@ def test_gemini_part_is_skipped_without_key(monkeypatch):
     monkeypatch.delenv("GEMINI_API_KEY", raising=False)
     r = skipped_report("gemini-embedding-2@768", "GEMINI_API_KEY no definida")
     assert r["status"] == "no ejecutado" and "far" not in r
+
+
+# ------------------------------------------------- revisión: borrado físico (B1)
+
+
+def _blob_of(path: Path) -> bytes:
+    con = sqlite3.connect(path)
+    try:
+        return bytes(con.execute("SELECT vec FROM vectors LIMIT 1").fetchone()[0])
+    finally:
+        con.close()
+
+
+def _raw_files(path: Path) -> bytes:
+    data = b""
+    for suffix in ("", "-wal"):
+        f = Path(str(path) + suffix)
+        if f.exists():
+            data += f.read_bytes()
+    return data
+
+
+def _distinct(seed: int) -> np.ndarray:
+    return np.random.default_rng(seed).normal(size=64).astype("float32")
+
+
+def test_delete_physically_removes_vector_bytes(tmp_path):
+    idx = make_index(tmp_path)
+    idx.add("A", [_distinct(1)], consent_ref="C-1")
+    blob = _blob_of(tmp_path / "idx.sqlite")
+    assert blob in _raw_files(tmp_path / "idx.sqlite")  # sanity: el test puede fallar
+    idx.delete("A")
+    assert blob not in _raw_files(tmp_path / "idx.sqlite")  # con la conexión abierta
+    idx.close()
+    assert blob not in _raw_files(tmp_path / "idx.sqlite")
+
+
+def test_purge_expired_physically_removes_vector_bytes(tmp_path):
+    idx = make_index(tmp_path)
+    idx.add("A", [_distinct(2)], consent_ref="C-1", retention_days=1, now=1000.0)
+    blob = _blob_of(tmp_path / "idx.sqlite")
+    assert idx.purge_expired(now=1000.0 + 2 * 86400) == ["A"]
+    assert blob not in _raw_files(tmp_path / "idx.sqlite")
+
+
+def test_reenroll_physically_removes_previous_vectors(tmp_path):
+    idx = make_index(tmp_path)
+    idx.add("A", [_distinct(3)], consent_ref="C-1")
+    old = _blob_of(tmp_path / "idx.sqlite")
+    idx.add("A", [_distinct(4)], consent_ref="C-1")
+    assert old not in _raw_files(tmp_path / "idx.sqlite")
+
+
+# ------------------------------------------------ revisión: permisos (N2)
+
+
+def test_index_and_audit_files_get_restricted_permissions(tmp_path, monkeypatch):
+    import faceid.vectorstore as vs
+    import faceid.verify as ver
+
+    touched: list[str] = []
+    real = ver.restrict_permissions
+
+    def spy(path):
+        touched.append(Path(path).name)
+        real(path)
+
+    monkeypatch.setattr(vs, "restrict_permissions", spy)
+    monkeypatch.setattr(ver, "restrict_permissions", spy)
+    idx = make_index(tmp_path)
+    idx.add("A", [unit(1, 0, 0)], consent_ref="C-1")
+    idx.delete("A")
+    assert "idx.sqlite" in touched
+    assert "idx.sqlite-wal" in touched
+    assert "idx.audit.jsonl" in touched
+
+
+@pytest.mark.skipif(
+    sys.platform == "win32", reason="chmod POSIX; en Windows es best effort"
+)
+def test_files_are_0600_on_posix(tmp_path):
+    idx = make_index(tmp_path)
+    idx.add("A", [unit(1, 0, 0)], consent_ref="C-1")
+    for name in ("idx.sqlite", "idx.audit.jsonl"):
+        assert (tmp_path / name).stat().st_mode & 0o777 == 0o600
+
+
+# -------------------------------------------- revisión: coherencia de nube (N3)
+
+
+def test_reopening_cloud_index_as_local_is_rejected(tmp_path):
+    make_index(tmp_path, "gemini-embedding-2@8", cloud=True).close()
+    with pytest.raises(ValueError, match="nube"):
+        make_index(tmp_path, "gemini-embedding-2@8", cloud=False)
+
+
+def test_reopening_local_index_as_cloud_is_rejected(tmp_path):
+    make_index(tmp_path, "m", cloud=False).close()
+    with pytest.raises(ValueError, match="nube"):
+        make_index(tmp_path, "m", cloud=True)
+
+
+# ---------------------------------------------- revisión: Gemini (N4, N6, N7)
+
+
+def test_rate_limit_detected_only_by_code_attribute():
+    models = FakeModels(error=RuntimeError("upstream said 429 somewhere"))
+    g, sleeps = gemini(models)
+    with pytest.raises(RuntimeError):
+        g.embed_many(items(1))
+    assert len(models.calls) == 1 and sleeps == []  # texto con "429" no reintenta
+
+
+def test_gemini_model_id_is_configurable():
+    models = FakeModels()
+    g, _ = gemini(models, model="gemini-embedding-2-preview")
+    g.embed_many(items(1))
+    assert models.calls[0]["model"] == "gemini-embedding-2-preview"
+    assert g.model_id == "gemini-embedding-2-preview@8"
+
+
+def test_cli_exposes_gemini_model_flag():
+    from faceid.cli import build_parser
+    from faceid.enroll_cli import build_parser as enroll_parser
+
+    a = enroll_parser().parse_args(
+        ["--person-id", "A", "--consent-ref", "C", "--gemini-model", "x"]
+    )
+    assert a.gemini_model == "x"
+    b = build_parser().parse_args(["compare-embedders", "--gemini-model", "y"])
+    assert b.gemini_model == "y"
+
+
+def test_missing_sdk_gives_spanish_error(monkeypatch):
+    monkeypatch.setitem(sys.modules, "google.genai", None)
+    g = GeminiEmbedder(cloud_consent=True, env={"GEMINI_API_KEY": KEY})
+    with pytest.raises(RuntimeError, match="uv sync --extra cloud") as e:
+        g.embed_many(items(1))
+    assert KEY not in str(e.value)
+
+
+# ----------------------------------- revisión: benchmark seguro (N1, N5, N8)
+
+
+def test_val_test_overlap_raises_value_error(tmp_path):
+    from faceid.benchmark import run as bench_run
+
+    with pytest.raises(ValueError, match="fuga"):
+        bench_run(None, None, tmp_path, [0, 1], [1, 2], range(5, 8), 0.01)  # type: ignore[arg-type]
+
+
+def test_gemini_comparison_requires_synthetic_only_flag(tmp_path):
+    from faceid.embed_benchmark import run_comparison
+
+    (tmp_path / "SYNTHETIC_DIGIFACE.json").write_text("{}", encoding="utf-8")
+    with pytest.raises(ValueError, match="synthetic-only"):
+        run_comparison(
+            ["gemini"],
+            tmp_path,
+            subjects=4,
+            per_subject=8,
+            target_far=0.01,
+            env={"GEMINI_API_KEY": KEY},
+        )
+
+
+def test_gemini_comparison_requires_digiface_marker(tmp_path):
+    from faceid.embed_benchmark import run_comparison
+
+    with pytest.raises(ValueError, match="DigiFace"):
+        run_comparison(
+            ["gemini"],
+            tmp_path,
+            subjects=4,
+            per_subject=8,
+            target_far=0.01,
+            env={"GEMINI_API_KEY": KEY},
+            synthetic_only=True,
+        )
+
+
+def test_download_writes_synthetic_marker(tmp_path):
+    from faceid import digiface
+
+    digiface.download_subset(tmp_path, range(0), 0)
+    assert (tmp_path / "SYNTHETIC_DIGIFACE.json").exists()
+
+
+def test_comparison_report_never_contains_exception_text(tmp_path, monkeypatch):
+    import faceid.embed_benchmark as eb
+
+    def boom(*a, **k):
+        raise RuntimeError(f"fallo con {KEY}")
+
+    monkeypatch.setattr(eb, "build_embedder", boom)
+    rep = eb.run_comparison(
+        ["sface"], tmp_path, subjects=4, per_subject=8, target_far=0.01, env={}
+    )
+    text = json.dumps(rep)
+    assert KEY not in text and "RuntimeError" in text

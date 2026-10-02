@@ -79,7 +79,9 @@ class FaceEngine:
             m = torchvision.models.mobilenet_v3_small(weights="IMAGENET1K_V1")
             m.classifier = torch.nn.Identity()
             self._cnn = m.eval()
-        elif embedder != "detector_only":  # solo detecta; otro Embedder calcula el vector
+        elif (
+            embedder != "detector_only"
+        ):  # solo detecta; otro Embedder calcula el vector
             raise ValueError(f"Embedder desconocido: {embedder}")
 
     def _prepare(self, img: np.ndarray) -> tuple[np.ndarray, float]:

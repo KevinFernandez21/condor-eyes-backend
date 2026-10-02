@@ -117,8 +117,11 @@ Conectarlo al runtime de agentes queda como seguimiento (no se toca `bus/hub.py`
 
 ### Gemini Embedding 2: reglas de uso (nube)
 
-- Modelo `gemini-embedding-2` (GA abril 2026), SDK `google-genai`, importado de forma diferida.
-  Se usa a 768 dimensiones (rango admitido 128-3072) y se re-normaliza (L2) en local.
+- Modelo `gemini-embedding-2` (GA abril 2026, documentación oficial). Los ejemplos del SDK
+  instalado usan `gemini-embedding-2-preview`; el id se cambia con `--gemini-model`.
+  **Ninguno está verificado contra el servicio real** hasta ejecutar con una clave.
+- SDK `google-genai` como extra opcional (`uv sync --extra cloud`), importado de forma diferida;
+  si falta, se da un error claro en español. Se usa a 768 dimensiones (rango admitido 128-3072) y se re-normaliza (L2) en local.
   Precio de pago: 0,00012 USD por imagen; hay nivel gratuito.
 - **Clave solo en la variable de entorno `GEMINI_API_KEY`.** Nunca se escribe en archivos, ni
   se registra; los mensajes de error la redactan.
@@ -131,6 +134,9 @@ Conectarlo al runtime de agentes queda como seguimiento (no se toca `bus/hub.py`
   consentimiento específico para esta prueba (inicialmente Kevin) y caras sintéticas
   (DigiFace-1M). El uso en producción de un embedding en la nube para biometría exige nivel de
   pago o se rechaza; la ruta local sigue siendo la predeterminada.
+- **Benchmark seguro:** `compare-embedders` con Gemini exige `--synthetic-only` y que el
+  directorio lleve el marcador `SYNTHETIC_DIGIFACE.json` (lo crea `faceid download`); si no,
+  se rechaza antes de enviar nada. Los informes solo guardan el nombre del tipo de error.
 - Límites de uso: lotes de 8 imágenes (un `Content` por imagen, para obtener un vector por
   imagen) y reintentos con espera exponencial ante 429.
 
@@ -148,6 +154,17 @@ uv run python scripts/face_enroll.py --embedder gemini --cloud-consent --person-
 ```
 
 Los fotogramas se procesan en memoria y se descartan; no se escriben a disco.
+
+### Borrado físico y permisos
+
+- El índice abre SQLite con `secure_delete=ON` y trunca el WAL (`wal_checkpoint(TRUNCATE)`)
+  tras cada alta, borrado o purga: los bytes de un vector borrado no quedan en el `.sqlite` ni
+  en el `-wal`. (Copias de seguridad o instantáneas del disco quedan fuera de este control.)
+- Un índice solo se reabre con el mismo `model_id` **y** el mismo valor de `cloud`; así no se
+  salta la guardia de consentimiento de nube.
+- Índice, `-wal`, `-shm` y auditoría se restringen a 0600 (POSIX). En Windows `chmod` solo
+  gestiona el bit de solo lectura (best effort): restringe la carpeta `data/faceid` con ACL de
+  NTFS (`icacls`) al responsable de datos.
 
 ### Resultados de la comparación
 

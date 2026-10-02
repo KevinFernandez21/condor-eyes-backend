@@ -17,7 +17,13 @@ from typing import Any
 
 import numpy as np
 
-from .embedders import EMBEDDER_NAMES, CloudConsentError, EmbedderEngine
+from .embedders import (
+    EMBEDDER_NAMES,
+    GEMINI_MODEL,
+    GEMINI_MODEL_PREVIEW,
+    CloudConsentError,
+    EmbedderEngine,
+)
 from .enroll import EnrollError, enroll_person
 from .vectorstore import MEMORY, FaceIndex, index_path
 
@@ -100,6 +106,11 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Consentimiento específico para enviar la cara a la nube (obligatorio con gemini)",
     )
+    p.add_argument(
+        "--gemini-model",
+        default=GEMINI_MODEL,
+        help=f"Id del modelo de Gemini (alternativa del SDK: {GEMINI_MODEL_PREVIEW})",
+    )
     p.add_argument("--photos", type=int, default=5, help="Fotos a capturar")
     p.add_argument("--min-samples", type=int, default=3)
     p.add_argument("--retention-days", type=float, default=365)
@@ -137,7 +148,9 @@ def main(argv: list[str] | None = None) -> int:
         else:
             from .embedders import build_embedder
 
-            engine, emb = build_embedder(a.embedder, cloud_consent=a.cloud_consent)
+            engine, emb = build_embedder(
+                a.embedder, cloud_consent=a.cloud_consent, gemini_model=a.gemini_model
+            )
             index = FaceIndex(
                 index_path(a.index_dir, emb.model_id), emb.model_id, cloud=emb.cloud
             )

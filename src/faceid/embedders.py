@@ -19,9 +19,12 @@ from typing import Any, Protocol
 
 import numpy as np
 
-GEMINI_MODEL = (
-    "gemini-embedding-2"  # GA abril 2026, ai.google.dev/gemini-api/docs/embeddings
-)
+# Id confirmado en la documentación oficial (GA abril 2026):
+# ai.google.dev/gemini-api/docs/embeddings. Los ejemplos del SDK instalado (2.27.0) usan
+# 'gemini-embedding-2-preview'. Ninguno se verificó contra el servicio real (sin clave):
+# `--gemini-model` permite cambiarlo.
+GEMINI_MODEL = "gemini-embedding-2"
+GEMINI_MODEL_PREVIEW = "gemini-embedding-2-preview"
 GEMINI_DIM = 768  # 128-3072 admitido; 768 es una de las recomendadas por Google
 GEMINI_USD_PER_IMAGE = 0.00012  # nivel de pago; ai.google.dev/gemini-api/docs/pricing
 EMBEDDER_NAMES = ("sface", "sface_int8", "mobilenet_imagenet", "gemini")
@@ -145,7 +148,13 @@ class GeminiEmbedder:
     def _get_client(self) -> Any:
         if self._client is None:
             key = self._key()
-            from google import genai  # importación diferida: SDK opcional
+            try:
+                from google import genai  # importación diferida: SDK opcional
+            except ImportError:
+                raise RuntimeError(
+                    "Falta el SDK de Gemini (extra opcional 'cloud'): "
+                    "instálalo con `uv sync --extra cloud`"
+                ) from None
 
             self._client = genai.Client(api_key=key)
         return self._client
@@ -153,12 +162,8 @@ class GeminiEmbedder:
     # -- API ------------------------------------------------------------
     @staticmethod
     def _is_rate_limit(exc: Exception) -> bool:
-        text = str(exc)
-        return (
-            getattr(exc, "code", None) == 429
-            or "RESOURCE_EXHAUSTED" in text
-            or "429" in text
-        )
+        # Solo el atributo `code` (APIError del SDK): el texto del error no es fiable.
+        return getattr(exc, "code", None) == 429
 
     def _call(self, batch: list[bytes]) -> list[np.ndarray]:
         client = self._get_client()
@@ -233,12 +238,15 @@ def build_embedder(
     cloud_consent: bool = False,
     weights_root: str = "weights/faceid",
     gemini_dim: int = GEMINI_DIM,
+    gemini_model: str = GEMINI_MODEL,
 ) -> tuple[EmbedderEngine, Embedder]:
     """Construye (motor de detección + embedder, embedder) para un nombre de `EMBEDDER_NAMES`."""
     from .engine import FaceEngine
 
     if name == "gemini":
-        gem = GeminiEmbedder(cloud_consent=cloud_consent, dim=gemini_dim)
+        gem = GeminiEmbedder(
+            cloud_consent=cloud_consent, dim=gemini_dim, model=gemini_model
+        )
         det = FaceEngine("detector_only", weights_root=weights_root)
         return EmbedderEngine(det, gem), gem
     if name not in EMBEDDER_NAMES:

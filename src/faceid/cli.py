@@ -7,6 +7,8 @@ import json
 from pathlib import Path
 from typing import Any
 
+from .embedders import GEMINI_MODEL, GEMINI_MODEL_PREVIEW
+
 STORE = "data/faceid/enrolled.json"
 
 
@@ -82,6 +84,8 @@ def cmd_compare_embedders(a: argparse.Namespace) -> None:
         per_subject=a.per_subject,
         target_far=a.target_far,
         gemini_min_interval=a.gemini_min_interval,
+        synthetic_only=a.synthetic_only,
+        gemini_model=a.gemini_model,
     )
     for name, r in report["models"].items():
         if r["status"] != "ejecutado":
@@ -187,6 +191,16 @@ def build_parser() -> argparse.ArgumentParser:
     )
     s.add_argument("--target-far", type=float, default=0.001)
     s.add_argument("--gemini-min-interval", type=float, default=0.0)
+    s.add_argument(
+        "--gemini-model",
+        default=GEMINI_MODEL,
+        help=f"Id del modelo de Gemini (alternativa del SDK: {GEMINI_MODEL_PREVIEW})",
+    )
+    s.add_argument(
+        "--synthetic-only",
+        action="store_true",
+        help="Obligatorio para Gemini: confirma que el conjunto es sintético (DigiFace)",
+    )
     s.add_argument("--output", default="reports/faceid_embedders.json")
     s.set_defaults(func=cmd_compare_embedders)
 

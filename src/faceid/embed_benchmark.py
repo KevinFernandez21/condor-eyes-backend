@@ -15,7 +15,14 @@ from pathlib import Path
 from typing import Any
 
 from .benchmark import Probe, calibrate, load, rates, split_subjects, templates
-from .embedders import GEMINI_USD_PER_IMAGE, Embedder, EmbedderEngine, build_embedder
+from .digiface import is_synthetic_digiface
+from .embedders import (
+    GEMINI_MODEL,
+    GEMINI_USD_PER_IMAGE,
+    Embedder,
+    EmbedderEngine,
+    build_embedder,
+)
 from .verify import Verifier, VerifyPolicy
 
 SINGLE_LATENCY_SAMPLES = 20
@@ -44,9 +51,8 @@ def run_embedder(
     price_per_image_usd: float = 0.0,
     policy: VerifyPolicy | None = None,
 ) -> dict[str, Any]:
-    assert not set(val_subjects) & set(test_subjects), (
-        "fuga de identidad entre val y test"
-    )
+    if set(val_subjects) & set(test_subjects):
+        raise ValueError("fuga de identidad entre val y test")
     policy = policy or VerifyPolicy(margin=margin)
     verifier = Verifier(engine, None, policy)
 
@@ -139,9 +145,23 @@ def run_comparison(
     enroll_n: int = 5,
     env: Mapping[str, str] | None = None,
     gemini_min_interval: float = 0.0,
+    synthetic_only: bool = False,
+    gemini_model: str = GEMINI_MODEL,
 ) -> dict[str, Any]:
     """Ejecuta cada embedder sobre los mismos sujetos disjuntos; Gemini solo si hay clave."""
     env = os.environ if env is None else env
+    if "gemini" in names:
+        # Antes de construir nada: ninguna cara sale hacia la nube sin estas dos garantías.
+        if not synthetic_only:
+            raise ValueError(
+                "Gemini envía las imágenes a la nube: confirma con --synthetic-only que "
+                "el conjunto es sintético (DigiFace); nunca caras de personas reales"
+            )
+        if not is_synthetic_digiface(root):
+            raise ValueError(
+                f"'{root}' no está verificado como DigiFace sintético (falta el marcador "
+                "que crea `faceid download`); no se envía nada a Gemini"
+            )
     half = subjects // 2
     val, test = list(range(half)), list(range(half, subjects))
     report: dict[str, Any] = {
@@ -159,8 +179,8 @@ def run_comparison(
             continue
         try:
             engine, embedder = build_embedder(
-                name, cloud_consent=True
-            )  # DigiFace es sintético: no hay personas reales que consentir
+                name, cloud_consent=True, gemini_model=gemini_model
+            )  # DigiFace verificado como sintético: no hay personas reales que consentir
             if name == "gemini" and hasattr(embedder, "min_interval"):
                 embedder.min_interval = gemini_min_interval
             report["models"][name] = run_embedder(
@@ -175,5 +195,5 @@ def run_comparison(
                 price_per_image_usd=GEMINI_USD_PER_IMAGE if name == "gemini" else 0.0,
             )
         except Exception as e:  # noqa: BLE001  un fallo de un embedder no tumba el resto del informe
-            report["models"][name] = skipped_report(name, f"{type(e).__name__}: {e}")
+            report["models"][name] = skipped_report(name, type(e).__name__)
     return report
