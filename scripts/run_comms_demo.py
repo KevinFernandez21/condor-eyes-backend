@@ -16,6 +16,7 @@ import argparse
 import asyncio
 import random
 import sys
+import time
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
@@ -37,10 +38,18 @@ class _Sink:
         pass
 
 
+def _track_fn(envelope):
+    """Seguimiento sintético con costo SIMULADO (20 ms) para que las latencias por
+    salto sean visibles: el reloj de pared de Windows es grueso (~15 ms)."""
+    time.sleep(0.02)
+    return {"tracks": list(envelope.payload.get("detections", []))}
+
+
 def _event_rule(track):
     """Un evento por cada mensaje de tracks, con zona sintética."""
+    time.sleep(0.01)  # costo simulado de la regla
     zone = ZONES[hash(track.event_id) % len(ZONES)]
-    return [{"type": "person_in_zone", "zone_id": zone, "tracks": len(track.payload["tracks"])}]
+    return [{"type": "zone_intrusion", "zone_id": zone, "tracks": len(track.payload["tracks"])}]
 
 
 async def _publish_synthetic(runtime: AgentRuntime, period: float) -> None:
@@ -55,20 +64,32 @@ async def _publish_synthetic(runtime: AgentRuntime, period: float) -> None:
             {"id": i, "label": "person", "confidence": round(rng.uniform(0.5, 0.99), 2)}
             for i in range(rng.randint(1, 3))
         ]
-        await runtime.emit("inference", Topic.DETECTIONS, {"detections": detections}, stream_id=camera)
+        det = await runtime.emit(
+            "inference", Topic.DETECTIONS, {"detections": detections}, stream_id=camera
+        )
         if n % 5 == 0:  # decisión de fusión sintética; identificadores ya seudonimizados
             zone = rng.choice(ZONES)
+            await asyncio.sleep(0.08)  # la evidencia (tracks) debe existir antes que la decisión
             await runtime.emit(
                 "event",
                 Topic.EVENTS,
                 {
                     "decision_id": f"dec-{n:04d}",
-                    "outcome": rng.choice(["corroborated", "uncorroborated"]),
+                    "outcome": rng.choice(["corroborated", "alert"]),
                     "confidence": round(rng.uniform(0.4, 0.95), 2),
                     "zone_id": zone,
                     "stream_id": camera,
                     "person_id": f"p-{rng.randrange(16**4):04x}",
                     "requires_operator": True,
+                    # el tracker deriva su event_id de forma determinista: <detección>/tracks
+                    "evidence": [
+                        {
+                            "evidence_id": f"{det.event_id}/tracks",
+                            "kind": "track",
+                            "role": "supports",
+                            "stream_id": camera,
+                        }
+                    ],
                 },
                 stream_id=camera,
             )
@@ -91,7 +112,7 @@ async def main() -> int:
         print(f"Error: {exc}", file=sys.stderr)
         return 2
     handlers = build_default_handlers(
-        storage_sink=_Sink(), alert_sink=_Sink(), event_rules=[_event_rule]
+        storage_sink=_Sink(), alert_sink=_Sink(), event_rules=[_event_rule], track_fn=_track_fn
     )
     handlers["comms"] = comms
     runtime = AgentRuntime(hub, handlers, heartbeat_interval=1.0)

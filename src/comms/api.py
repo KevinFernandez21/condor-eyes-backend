@@ -31,6 +31,7 @@ from fastapi import (
 from starlette.websockets import WebSocketDisconnect
 
 from bus import InvalidTopicError, Topic, parse_topic
+from tracing import TraceStore
 
 from .tap import payload_stream
 from .view import SystemView
@@ -197,6 +198,7 @@ def create_app(
     host: str = "127.0.0.1",
     ws_queue_size: int = DEFAULT_WS_QUEUE,
     allowed_origins: Sequence[str] | None = None,
+    traces: TraceStore | None = None,
 ) -> FastAPI:
     """Construye la app. Falla si ``host`` no es local y no hay ``token``.
 
@@ -204,6 +206,9 @@ def create_app(
     defecto: loopback (localhost, 127.0.0.1, [::1]) y el ``host`` de servicio,
     en el puerto en que se sirve. Sin cabecera ``Origin`` (clientes que no son
     navegador) se permite. Con token, ``/docs`` y ``/openapi.json`` se desactivan.
+
+    Con ``traces`` expone ``/traces`` y ``/traces/{correlation_id}`` (solo lectura,
+    mismo token que el resto de rutas HTTP).
     """
     check_bind(host, token)
     token = token or None
@@ -308,6 +313,19 @@ def create_app(
         limit: int = Limit, stream_id: str | None = None, zone: str | None = None
     ) -> dict[str, Any]:
         return {"decisions": view.decisions(limit, stream_id=stream_id, zone=zone)}
+
+    if traces is not None:
+
+        @router.get("/traces")
+        async def list_traces(limit: int = Limit) -> dict[str, Any]:
+            return {"traces": await asyncio.to_thread(traces.list, limit)}
+
+        @router.get("/traces/{correlation_id}")
+        async def get_trace(correlation_id: str) -> dict[str, Any]:
+            trace = await asyncio.to_thread(traces.get, correlation_id)
+            if trace is None:
+                raise HTTPException(status_code=404, detail="Traza desconocida o expulsada")
+            return trace
 
     app.include_router(router)
     app.state.ws_clients_count = lambda: len(state.clients)  # para pruebas
