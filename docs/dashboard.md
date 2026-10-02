@@ -40,14 +40,24 @@ navegador ──GET /api/state (1 s)──▶ servidor del dashboard ──HTTP 
 - Con `https://` se verifica el certificado con el almacén del sistema. Si falla por el mismo problema, usa `truststore` (almacén del SO) o `certifi` (bundle propio) en lugar de desactivar la verificación.
 - **`--allow-lan` con API en `http://`: el token viaja en claro** por la red (cabecera `Authorization`), y el dashboard no tiene login propio. Úsalo solo en redes de confianza o pon TLS delante.
 
-## Paneles
+## Vistas
 
-- **Grafo**: nodos = roles de `src/agents/route.py` + `fusion`, `location`, `identity`, `actuation` (previstos, punteados hasta que la API los reporte); aristas = tópicos con msg/s y descartes de `/topics`. Color por estado: en marcha, degradado, caído, detenido, sin datos (también con texto).
-- **Mensajes**: filtro por tópico, búsqueda, `payload` expandible, enlace por `correlation_id`.
-- **Alertas**: resultado, códigos de razón, evidencia y `requires_operator` (siempre visible).
-- **Mapa de sitio**: zonas y receptores de `site_map.toml` (opcional); presencia de tags desde mensajes de localización (`tag_ref`, `status`, `zone_id`); sin ellos: «sin datos».
-- **Salud**: `/health` y salud por stream; FPS, latencia p50/p90, CPU y memoria muestran «sin datos» si el pipeline no los publica (hardware: laptop).
-- **Cámara**: marcador; la vista previa vive del lado del pipeline y no está implementada (ningún frame pasa por la API).
+Navegación por pestañas (`#agentes`, `#multicamara`); diseño oscuro tipo VMS, un solo acento y colores de estado/clase como variables CSS. A 375 px la rejilla pasa a una columna y la línea de tiempo se desplaza dentro de su contenedor.
+
+### Agentes
+
+- **Salud**: `/health` más salud por stream. «Agentes en marcha» cuenta solo roles (los componentes no suman). FPS, latencia, CPU y memoria muestran «—» si el pipeline no los publica (hardware: laptop).
+- **Componentes**: tira aparte (cámara, detector, fusión…) con la entrada `role: "component"` de `/agents`; no son nodos del grafo.
+- **Grafo por capas**: pipeline `ingest → inference → tracker → event → storage`, supervisor y comms debajo, plugins (`location`, `identity`, `fusion`, `actuation`) en un carril lateral (punteados mientras la API no los reporte). Cada nodo muestra msg/s (delta de `processed` entre sondeos), cola y reinicios. Las aristas de control (`system.*`) se ocultan salvo «Mostrar control»; los tópicos van en una tabla plegable. Ningún valor ausente se pinta como `null`/`None`: siempre «—».
+- **Alertas**, **mensajes en vivo** (filtro por tópico, búsqueda, `correlation_id`) y **mapa de sitio** (opcional) como antes. Cada decisión nueva de gravedad alta o media lanza un aviso apilado abajo a la derecha («Alerta: persona en entrada»).
+
+### Multicámara (maqueta, sin video)
+
+- Barra con filtros **Estado**, **Zonas** (escena de la cámara) y **Alertas** (solo cámaras con alertas recientes), distribución 1×1 / 2×2 / 3×3 con paginación, «Revisión aleatoria» y «En vivo» (en pausa congela las teselas).
+- Cada tesela es una escena sintética en `<canvas>` (determinista por cámara: entrada, estacionamiento, perímetro, bodega, pasillo) con cajas, etiqueta, `track_id` y confianza dibujadas desde la metadata de detección, escaladas desde el tamaño de frame del payload (1920×1080 por defecto). Nombre abajo a la izquierda; cámaras caídas o degradadas muestran un velo. Clic en una tesela la amplía; Esc o clic vuelve.
+- **Revisión aleatoria**: en el cliente, cada 6 s elige una cámara al azar (semilla por hora), la resalta y registra en «Revisiones» hora, cámara, número de detecciones y resultado (OK o alerta si la cámara no está en línea o tiene una alerta alta reciente).
+- **Línea de tiempo**: se construye en el servidor (`src/dashboard/timeline.py`) con cubetas de un minuto por cámara y clase (máximo simultáneo, acotado a 180 min y 64 cámaras). Carriles Persona (amarillo), Vehículo (naranja) y Movimiento (celeste); el tooltip de cada barra da los conteos, el cursor sigue al ratón y un clic lo fija y pausa. No hay grabación: el cursor lee conteos, no video.
+- Metadata de cámara tolerante: `name`/`scene` planos o dentro de `camera` en `stream.status`/`system.health`; sin ella, el nombre es el `stream_id` y la escena se deduce de forma estable. Diseñado para N cámaras.
 
 ## Privacidad
 
@@ -55,6 +65,6 @@ Se muestran los identificadores tal como llegan (seudonimizados). Defensa en pro
 
 ## Pendiente
 
-- Vista previa de cámara con cajas (endpoint del pipeline).
+- **Cámaras reales**: las teselas necesitan un endpoint de instantáneas/MJPEG **del lado del pipeline** (acotado en tasa y desactivado por defecto). Ningún frame pasa por el bus ni por la API; mientras tanto la vista es una maqueta con escenas sintéticas.
 - CPU/memoria/FPS reales cuando el pipeline los publique.
 - Tópico `location` en el bus (hoy se reconoce por tópico o por forma del payload).
