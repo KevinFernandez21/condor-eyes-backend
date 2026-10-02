@@ -43,6 +43,12 @@ pruebas; `AgentScopeHub` la extiende. Ninguno aplica reglas de negocio.
 - Un tópico, versión o payload inválido falla al publicar con un error claro
   (`InvalidTopicError`, `UnsupportedVersionError`, `InvalidEnvelopeError`),
   incluidos payloads con datos binarios (frames).
+- El payload debe ser un `Mapping` de primitivas JSON (`str`, `int`, `float`,
+  `bool`, `None`, `list`, `tuple`, `dict` con claves de texto). Se rechazan
+  `bytes`/`bytearray`/`memoryview`, arrays y tensores (detectados por duck
+  typing, sin importar numpy) y cualquier otro tipo, indicando la ruta del
+  campo. La validación corre al construir el `MetadataEnvelope` y de nuevo al
+  publicar; así ningún frame puede llegar al bus.
 - `envelope.derive(...)` crea hijos con `event_id = <padre>/<sufijo>`:
   determinista, así reprocesar la misma entrada produce las mismas salidas.
 

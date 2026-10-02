@@ -1,5 +1,8 @@
 """Pruebas del contrato de envelopes tipados del bus de metadata."""
 
+from datetime import UTC, datetime
+from typing import ClassVar
+
 import pytest
 
 from bus import (
@@ -142,3 +145,83 @@ def test_error_envelope_without_failed_event_gets_own_ids():
     assert error.event_id
     assert error.causation_id is None
     assert error.payload["failed_event_id"] is None
+
+
+# --- Payload: solo primitivas JSON, sin frames ni arrays -----------------------
+
+
+class DuckArray:
+    """Imita np.ndarray / torch.Tensor sin importarlos (shape + dtype)."""
+
+    shape = (1080, 1920, 3)
+    dtype = "uint8"
+
+
+class InterfaceArray:
+    __array_interface__: ClassVar[dict] = {
+        "shape": (2,),
+        "typestr": "|u1",
+        "version": 3,
+    }
+
+
+@pytest.mark.parametrize(
+    "bad",
+    [b"\x00", bytearray(b"ab"), memoryview(b"ab")],
+    ids=["bytes", "bytearray", "memoryview"],
+)
+def test_envelope_construction_rejects_binary_payloads(bad):
+    with pytest.raises(InvalidEnvelopeError, match="frames"):
+        MetadataEnvelope(source="inference", payload={"frame": bad})
+
+
+@pytest.mark.parametrize("bad", [DuckArray(), InterfaceArray()], ids=["duck", "iface"])
+def test_envelope_construction_rejects_array_like_payloads_nested(bad):
+    with pytest.raises(
+        InvalidEnvelopeError, match=r"(?i)array.*payload\.detections\[0\]\.mask"
+    ):
+        MetadataEnvelope(source="inference", payload={"detections": [{"mask": bad}]})
+
+
+def test_real_numpy_arrays_and_scalars_are_rejected():
+    np = pytest.importorskip("numpy")
+    with pytest.raises(InvalidEnvelopeError, match="(?i)array"):
+        MetadataEnvelope(source="x", payload={"f": np.zeros((2, 2), dtype=np.uint8)})
+    with pytest.raises(InvalidEnvelopeError, match="(?i)array|serializable"):
+        MetadataEnvelope(source="x", payload={"conf": np.float32(0.5)})
+
+
+@pytest.mark.parametrize(
+    "bad",
+    [datetime(2026, 1, 1, tzinfo=UTC), {1, 2}, object(), {"k": {3: "x"}}],
+    ids=["datetime", "set", "object", "non-str-key"],
+)
+def test_envelope_construction_rejects_non_json_primitives(bad):
+    with pytest.raises(InvalidEnvelopeError, match="serializable"):
+        MetadataEnvelope(source="x", payload={"v": bad})
+
+
+def test_valid_json_metadata_is_accepted_unchanged():
+    payload = {
+        "detections": [{"xyxy": [1.0, 2.5, 3, 4], "label": "person", "ok": True}],
+        "none": None,
+        "tuple": (1, 2),
+    }
+    envelope = MetadataEnvelope(source="inference", payload=payload)
+    assert envelope.payload is payload
+    validate_envelope(Topic.DETECTIONS, envelope)
+
+
+def test_payload_mutated_after_construction_is_caught_at_publish_time():
+    payload: dict = {"ok": 1}
+    envelope = MetadataEnvelope(source="x", payload=payload)
+    payload["frame"] = b"raw"
+    with pytest.raises(InvalidEnvelopeError, match="frames"):
+        validate_envelope(Topic.EVENTS, envelope)
+
+
+def test_self_referencing_payload_is_rejected():
+    payload: dict = {}
+    payload["self"] = payload
+    with pytest.raises(InvalidEnvelopeError, match="circular|profundidad"):
+        MetadataEnvelope(source="x", payload=payload)

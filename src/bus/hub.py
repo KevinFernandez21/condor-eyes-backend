@@ -79,6 +79,7 @@ class MetadataEnvelope:
         # Sin correlación explícita, el evento inicia su propia cadena.
         if self.correlation_id is None:
             object.__setattr__(self, "correlation_id", self.event_id)
+        validate_payload(self.payload)
 
     def derive(
         self,
@@ -149,32 +150,74 @@ def parse_topic(value: str | Topic) -> Topic:
         ) from None
 
 
-def _json_default(value: object) -> Any:
-    if isinstance(value, datetime):
-        return value.isoformat()
-    if isinstance(value, bytes | bytearray | memoryview):
-        raise InvalidEnvelopeError(
-            "El payload contiene datos binarios; el bus solo transporta "
-            "metadata, nunca frames de video"
-        )
-    raise InvalidEnvelopeError(
-        f"El payload no es serializable a JSON: tipo {type(value).__name__}"
+_MAX_PAYLOAD_DEPTH = 32
+_JSON_SCALARS = (str, int, float, bool, type(None))
+
+
+def _looks_like_array(value: object) -> bool:
+    """Detecta ndarray/tensores por duck typing, sin importar numpy ni torch."""
+    return (
+        hasattr(value, "__array_interface__")
+        or hasattr(value, "__array__")
+        or (hasattr(value, "shape") and hasattr(value, "dtype"))
     )
 
 
-def _dump_payload(payload: Mapping[str, Any]) -> str:
+def _check_value(value: object, path: str, depth: int) -> None:
+    if isinstance(value, _JSON_SCALARS):
+        return
+    if isinstance(value, bytes | bytearray | memoryview):
+        raise InvalidEnvelopeError(
+            f"Datos binarios en {path} ({type(value).__name__}): el bus solo "
+            "transporta metadata, nunca frames de video"
+        )
+    if _looks_like_array(value):
+        raise InvalidEnvelopeError(
+            f"Array, tensor o escalar de array en {path} ({type(value).__name__}): el bus solo "
+            "transporta metadata, nunca frames de video"
+        )
+    if depth >= _MAX_PAYLOAD_DEPTH:
+        raise InvalidEnvelopeError(
+            f"El payload supera la profundidad máxima ({_MAX_PAYLOAD_DEPTH}) en "
+            f"{path}; ¿referencia circular?"
+        )
+    if isinstance(value, Mapping):
+        for key, item in value.items():
+            if not isinstance(key, str):
+                raise InvalidEnvelopeError(
+                    f"El payload no es serializable a JSON: clave no textual "
+                    f"{key!r} en {path}"
+                )
+            _check_value(item, f"{path}.{key}", depth + 1)
+        return
+    if isinstance(value, list | tuple):
+        for index, item in enumerate(value):
+            _check_value(item, f"{path}[{index}]", depth + 1)
+        return
+    raise InvalidEnvelopeError(
+        f"El payload no es serializable a JSON: tipo {type(value).__name__} "
+        f"en {path} (solo str, int, float, bool, None, list, tuple y dict)"
+    )
+
+
+def validate_payload(payload: object) -> None:
+    """Exige un Mapping de primitivas JSON: sin binarios, arrays ni objetos.
+
+    Rechaza ``bytes``/``bytearray``/``memoryview``, arrays y tensores
+    (ndarray, torch) detectados por duck typing, y cualquier tipo que no sea
+    ``str``, ``int``, ``float``, ``bool``, ``None``, ``list``, ``tuple`` o
+    ``dict`` con claves de texto. Así ningún frame puede llegar al bus.
+    """
     if not isinstance(payload, Mapping):
         raise InvalidEnvelopeError(
             f"El payload debe ser un Mapping, no {type(payload).__name__}"
         )
-    try:
-        return json.dumps(payload, default=_json_default, separators=(",", ":"))
-    except InvalidEnvelopeError:
-        raise
-    except (TypeError, ValueError) as exc:
-        raise InvalidEnvelopeError(
-            f"El payload no es serializable a JSON: {exc}"
-        ) from exc
+    _check_value(payload, "payload", 0)
+
+
+def _dump_payload(payload: Mapping[str, Any]) -> str:
+    validate_payload(payload)
+    return json.dumps(payload, separators=(",", ":"))
 
 
 def validate_envelope(topic: Topic | str, envelope: MetadataEnvelope) -> Topic:
@@ -199,7 +242,7 @@ def validate_envelope(topic: Topic | str, envelope: MetadataEnvelope) -> Topic:
         raise InvalidEnvelopeError("El campo source no puede estar vacío")
     if not envelope.event_id:
         raise InvalidEnvelopeError("El campo event_id no puede estar vacío")
-    _dump_payload(envelope.payload)
+    validate_payload(envelope.payload)
     return parsed
 
 
