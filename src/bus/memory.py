@@ -35,6 +35,11 @@ class Subscription:
         self._closed = False
         self._hub = hub
 
+    @property
+    def pending(self) -> int:
+        """Mensajes encolados aún no entregados al consumidor."""
+        return sum(1 for item in self._items if item is not _CLOSED)
+
     def _push(self, message: MetadataEnvelope) -> bool:
         """Encola un mensaje; devuelve ``True`` si tuvo que descartar uno."""
         if self._closed:
