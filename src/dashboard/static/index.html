@@ -92,6 +92,20 @@
         <div id="pager" class="pager" hidden></div>
         <p class="mock-note">Maqueta: las escenas son sintéticas. Las cajas salen de la metadata de detección; no hay video. La cámara real requiere un endpoint de instantáneas/MJPEG del lado del pipeline.</p>
       </section>
+      <section class="timeline panel" aria-labelledby="h-timeline">
+        <div class="panel-head">
+          <h2 id="h-timeline">Línea de tiempo</h2>
+          <div class="tl-controls">
+            <select id="tl-camera" aria-label="Cámara de la línea de tiempo"></select>
+            <select id="tl-window" aria-label="Ventana">
+              <option value="15">15 min</option><option value="30">30 min</option>
+              <option value="60" selected>60 min</option>
+            </select>
+            <span id="tl-readout" class="readout" aria-live="polite">Ahora</span>
+          </div>
+        </div>
+        <div class="tl-scroll"><svg id="tl" role="img" aria-label="Línea de tiempo de detecciones por clase"></svg></div>
+      </section>
       <aside class="reviews panel" aria-labelledby="h-reviews">
         <h2 id="h-reviews">Revisiones</h2>
         <ol id="review-log" class="review-log"></ol>
@@ -99,20 +113,6 @@
       </aside>
     </div>
 
-    <section class="timeline panel" aria-labelledby="h-timeline">
-      <div class="panel-head">
-        <h2 id="h-timeline">Línea de tiempo</h2>
-        <div class="tl-controls">
-          <select id="tl-camera" aria-label="Cámara de la línea de tiempo"></select>
-          <select id="tl-window" aria-label="Ventana">
-            <option value="15">15 min</option><option value="30">30 min</option>
-            <option value="60" selected>60 min</option>
-          </select>
-          <span id="tl-readout" class="readout" aria-live="polite">Ahora</span>
-        </div>
-      </div>
-      <div class="tl-scroll"><svg id="tl" role="img" aria-label="Línea de tiempo de detecciones por clase"></svg></div>
-    </section>
   </main>
 
   <div id="toasts" class="toasts" aria-live="polite"></div>

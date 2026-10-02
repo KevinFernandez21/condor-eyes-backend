@@ -34,8 +34,8 @@ const App = (() => {
       const t = el("div", { class: `toast ${a.severity}`, role: "status", onclick: () => t.remove() },
         el("b", {}, a.toast), el("small", {}, `${UI.clock(a.evaluated_at)} · ${dash(a.stream_id)} · requiere operador`));
       box.append(t);
-      setTimeout(() => t.remove(), 9000);
-      while (box.children.length > 4) box.firstChild.remove();
+      setTimeout(() => t.remove(), 7000);
+      while (box.children.length > 3) box.firstChild.remove();
     }
     firstSnapshot = false;
   }

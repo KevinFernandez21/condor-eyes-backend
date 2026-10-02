@@ -102,7 +102,7 @@ const Cams = (() => {
   }
   function loop() {
     if (document.getElementById("view-cams").hidden) { rafId = 0; return; }
-    for (const t of tiles.values()) if (t.root.isConnected && t.data) { try { drawFrame(t); } catch (e) { console.error(e); } }
+    for (const t of tiles.values()) if (t.root.isConnected && t.data && t.visible !== false) { try { drawFrame(t); } catch (e) { console.error(e); } }
     rafId = requestAnimationFrame(loop);
   }
 
@@ -136,6 +136,9 @@ const Cams = (() => {
     t.root = el("div", { class: "tile", tabindex: "0", role: "button", onclick: () => toggleFocus(cam.id),
       onkeydown: (ev) => { if (ev.key === "Enter" || ev.key === " ") { ev.preventDefault(); toggleFocus(cam.id); } } },
       t.canvas, t.badge, t.counts, t.veil, t.name);
+    if ("IntersectionObserver" in window) {  // no pintar teselas fuera de pantalla
+      new IntersectionObserver((entries) => { for (const e of entries) t.visible = e.isIntersecting; }).observe(t.root);
+    }
     return t;
   }
   function updateTile(t, cam, s) {

@@ -122,15 +122,22 @@ pre { margin: 6px 0 2px; padding: var(--s2); background: var(--bg); border-radiu
 .switch.live input:checked + span::before { content: ""; display: inline-block; width: 8px; height: 8px; border-radius: 50%; background: var(--bad); margin-right: 6px; animation: pulse 1.4s infinite; }
 @keyframes pulse { 50% { opacity: .3; } }
 
-.vms-body { display: grid; gap: var(--s3); grid-template-columns: minmax(0, 1fr) 260px; align-items: start; }
-@media (max-width: 1000px) { .vms-body { grid-template-columns: 1fr; } }
+/* Escritorio: rejilla | revisiones, y la línea de tiempo debajo a todo el ancho.
+   Estrecho: rejilla, línea de tiempo y revisiones en una columna (la línea de tiempo
+   queda justo bajo las cámaras). */
+.vms-body { display: grid; gap: var(--s3); grid-template-columns: minmax(0, 1fr) 260px; align-items: start;
+  grid-template-areas: "grid reviews" "tl tl"; }
+.grid-wrap { grid-area: grid; min-width: 0; } .timeline { grid-area: tl; } .reviews { grid-area: reviews; }
+@media (max-width: 1000px) { .vms-body { grid-template-columns: minmax(0, 1fr); grid-template-areas: "grid" "tl" "reviews"; } }
+/* Anclada abajo como en un VMS, solo si la pantalla es lo bastante alta. */
+@media (min-width: 1001px) and (min-height: 760px) { .timeline { position: sticky; bottom: 0; z-index: 5; box-shadow: 0 -8px 16px var(--bg); } }
 .cam-grid { display: grid; gap: var(--s2); grid-template-columns: repeat(var(--cols, 2), minmax(0, 1fr)); }
 @media (max-width: 640px) { .cam-grid { grid-template-columns: 1fr; } }
-.tile { position: relative; aspect-ratio: 16 / 9; background: #000; border: 1px solid var(--line); border-radius: 6px; overflow: hidden; cursor: pointer; transition: transform .2s, box-shadow .2s; }
+.tile { position: relative; aspect-ratio: 16 / 9; background: #000; border: 1px solid var(--line); border-radius: 6px; overflow: hidden; cursor: pointer; isolation: isolate; contain: layout paint; transition: box-shadow .2s, border-color .2s; }
 .tile canvas { width: 100%; height: 100%; display: block; }
 .tile.off canvas { filter: grayscale(1) brightness(.45); }
 .tile:hover { border-color: var(--accent); }
-.tile.review { z-index: 2; transform: scale(1.025); box-shadow: 0 0 0 2px var(--accent), 0 8px 28px #000a; }
+.tile.review { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent), 0 0 24px #3b82f688; }
 .tile .name { position: absolute; left: 8px; bottom: 8px; background: #000b; padding: 2px 8px; border-radius: 4px; font-size: 13px; font-weight: 600; max-width: 70%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .tile .badge { position: absolute; left: 8px; top: 8px; display: flex; align-items: center; gap: 6px; background: #000b; padding: 1px 8px; border-radius: 4px; font-size: 11px; letter-spacing: .05em; }
 .tile .counts { position: absolute; right: 8px; bottom: 8px; display: flex; gap: 4px; }
@@ -142,7 +149,8 @@ pre { margin: 6px 0 2px; padding: var(--s2); background: var(--bg); border-radiu
 .tile.focus-mode { cursor: zoom-out; }
 .pager { display: flex; justify-content: center; align-items: center; gap: var(--s2); margin-top: var(--s2); }
 .mock-note { color: var(--muted); font-size: 12px; margin: var(--s2) 0 0; }
-.reviews .review-log { list-style: none; margin: 0; padding: 0; max-height: 420px; overflow-y: auto; }
+.reviews .review-log { list-style: none; margin: 0; padding: 0; max-height: min(420px, 45vh); overflow-y: auto; }
+@media (max-width: 1000px) { .reviews .review-log { max-height: 220px; } }
 .reviews li { display: grid; grid-template-columns: auto 1fr auto; gap: 2px var(--s2); padding: 5px 0; border-bottom: 1px solid var(--line); font-size: 12px; }
 .res { font-weight: 600; } .res.ok { color: var(--ok); } .res.alerta { color: var(--bad); }
 
@@ -159,5 +167,6 @@ pre { margin: 6px 0 2px; padding: var(--s2); background: var(--bg); border-radiu
 .toasts { position: fixed; right: var(--s4); bottom: var(--s4); display: flex; flex-direction: column; gap: var(--s2); z-index: 50; max-width: min(340px, calc(100vw - 32px)); }
 .toast { background: var(--surface-2); border: 1px solid var(--line-2); border-left: 4px solid var(--bad); border-radius: var(--radius); padding: var(--s2) var(--s3); box-shadow: 0 6px 24px #000a; cursor: pointer; }
 .toast.medium { border-left-color: var(--warn); } .toast b { display: block; } .toast small { color: var(--muted); }
+@media (max-height: 600px) { .toast small { display: none; } .toast { padding: 6px 10px; } .toasts { gap: 4px; } }
 .foot { margin-top: var(--s4); font-size: 12px; color: var(--muted); }
 @media (prefers-reduced-motion: reduce) { .tile, .switch.live input:checked + span::before { transition: none; animation: none; } }

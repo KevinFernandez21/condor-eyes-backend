@@ -128,3 +128,15 @@ def test_static_files_must_revalidate_and_versioned_url_resolves():
     assert response.status_code == 200
     assert response.headers["cache-control"] == "no-cache"
     assert "etag" in response.headers
+
+
+def test_timeline_sits_right_after_the_grid_and_before_the_reviews_log():
+    html = _client().get("/").text
+    body = html[html.index('class="vms-body"'):]
+    assert body.index('id="cam-grid"') < body.index('id="tl"') < body.index('id="review-log"')
+
+
+def test_tile_review_highlight_does_not_use_transforms():
+    css = _client().get("/static/style.css").text
+    review = css[css.index(".tile.review"):].split("}")[0]
+    assert "transform" not in review
