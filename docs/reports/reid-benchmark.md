@@ -1,5 +1,7 @@
 # Informe: re-identificación entre cámaras (issue #11)
 
+> **Hardware y runtime de estas mediciones:** laptop con Intel Core Ultra 9 275HX (24 hilos), 32 GB de RAM, GPU dedicada NVIDIA GeForce RTX 5080 Laptop (16 GB) y GPU integrada Intel Graphics, Windows 11, Python 3.11.16. Runtime: torch 2.14.1+cu130 en la RTX 5080 en FP16 (`net.half()`); latencias medidas mientras otro entrenamiento usaba la misma GPU. **No** es la Jetson Orin Nano ni la laptop i7 de 12.ª gen. del equipo: los FPS y latencias de aquí no se transfieren. El presupuesto común sin CUDA está en [`docs/edge-budget.md`](../edge-budget.md) (issue #23).
+
 Corrida del 2026-10-01 en la laptop (RTX 5080 Laptop), con
 `uv run python scripts/reid.py benchmark`. Datos: Market-1501 v15.09.15, solo para
 investigación.

@@ -17,5 +17,5 @@ Todo Python. Sin Rust, sin Go, sin C++ propio.
 ## Reglas
 
 - Ningún frame sale del pipeline al MsgHub: solo detecciones, tracks y eventos.
-- FP16 obligatorio en Jetson. Sin FP32 en producción.
+- FP16 obligatorio en Jetson. Sin FP32 en producción. INT8 solo con calibración documentada. Política por modelo y presupuesto de memoria en `docs/edge-budget.md` (ARCH-007).
 - Interfaz bus tipada en `src/bus/hub.py`; ningún agente importa el bus crudo.

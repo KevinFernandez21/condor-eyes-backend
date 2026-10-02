@@ -50,6 +50,11 @@ src/bus/hub.py                    # wrapper MsgHub: publish/subscribe tipado
 - Inferencia: YOLOv8n FP16 640px, batch 4-8, un solo engine.
 - Memoria unificada 8GB: ~2GB sistema, resto a batch + tracker + buffers.
   Si hay OOM, bajar a 720p o reducir batch, no duplicar modelos.
+- Presupuesto medido en la laptop sin CUDA como proxy (OpenVINO FP16, iGPU; issue #23,
+  `docs/edge-budget.md`): el stack completo (detector + re-ID + verificación facial) a 640
+  con 8 streams 1080p ocupa 3,6 GB (detector unificado) o 4,4 GB (dos detectores); a 1280
+  no cabe con margen. Orden ante OOM: entrada 1280→640, cámaras 1080p→720p, sub-lotes,
+  menor frecuencia de etapas opcionales, menos streams.
 
 ## 5. Decisiones
 
@@ -60,6 +65,10 @@ src/bus/hub.py                    # wrapper MsgHub: publish/subscribe tipado
 | ARCH-003 | Pendiente | Tracker: NvDCF vs ByteTrack liviano |
 | ARCH-004 | Decidido | Repo anterior descartado |
 | ARCH-005 | Decidido | Video fuera del bus AgentScope, solo metadata por MsgHub |
+| ARCH-006 | Decidido | Detector: objetivo un único YOLOv8n de 10 clases (9 de vigilancia + `weapon`) en un solo engine FP16 (−40 % de cómputo y −0,2/0,7 GB frente a dos detectores, medido en #23). Requiere reentrenar (issue aparte); mientras tanto, **excepción temporal**: dos engines (vigilancia #9 + armas #1), nunca uno por cámara, con el de armas a menor frecuencia si falta throughput |
+| ARCH-007 | Decidido | Precisión: FP16 en todos los modelos (detector, re-ID, YuNet, SFace); INT8 solo con calibración documentada; FP32 prohibido en producción; única excepción registrada: la herramienta de evaluación de #10 en la laptop (OpenCV DNN FP32), no producción (SFace FP16 equivale a FP32: coseno ≥ 0,9998) |
+| ARCH-008 | Decidido | Entrada del detector 640 por defecto en multistream; 1280 solo con N ≤ 2 cámaras |
+| ARCH-009 | Pendiente | Validar el presupuesto de #23 en la Jetson con TensorRT FP16 + NVDEC (checklist en `docs/edge-budget.md`) |
 
 ## 6. Alternativas descartadas
 

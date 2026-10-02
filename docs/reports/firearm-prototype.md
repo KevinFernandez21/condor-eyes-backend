@@ -1,5 +1,7 @@
 # Informe: prototipo de detección de armas (issue #1)
 
+> **Hardware y runtime de estas mediciones:** laptop con Intel Core Ultra 9 275HX (24 hilos), 32 GB de RAM, GPU dedicada NVIDIA GeForce RTX 5080 Laptop (16 GB) y GPU integrada Intel Graphics, Windows 11, Python 3.11.16. Runtime: ultralytics 8.4.170 + torch 2.14.1+cu130 en la RTX 5080, pesos `.pt` con `quantize=16` (FP16), batch 1. **No** es la Jetson Orin Nano ni la laptop i7 de 12.ª gen. del equipo: los FPS y latencias de aquí no se transfieren. El presupuesto común sin CUDA está en [`docs/edge-budget.md`](../edge-budget.md) (issue #23).
+
 Corrida del 2026-09-30 en la laptop de desarrollo. **Prototipo de detección, no
 una garantía de seguridad.** Los falsos negativos son altos en video real (ver abajo).
 
