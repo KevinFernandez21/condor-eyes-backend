@@ -59,7 +59,7 @@ def record(store, tracer, topic, envelope):
 
 def decision_envelope(**extra):
     payload = {
-        "decision_id": "dec-1", "outcome": "uncorroborated", "confidence": 0.5,
+        "decision_id": "dec-1", "outcome": "alert", "confidence": 0.5,
         "reason_codes": ["unknown_face"], "zone_id": "z1", "requires_operator": True,
         "person_id": "p-7f3a",
         "evidence": [{"evidence_id": "x", "kind": "identity", "role": "supports"}],
@@ -123,7 +123,7 @@ def test_una_traza_por_decision_de_fusion_con_hijos_de_evidencia():
     starts = [kw for kind, kw in client.calls if kind == "start"]
     assert starts[0]["name"] == "fusion.decision"
     assert starts[0]["trace_context"] == {"trace_id": "trace-dec-1"}
-    assert starts[0]["output"]["outcome"] == "uncorroborated"
+    assert starts[0]["output"]["outcome"] == "alert"
     assert {s["name"] for s in starts[1:]} >= {"evidence.identity"}
     assert ("end", {}) in client.calls
 
@@ -185,7 +185,7 @@ def test_nada_biometrico_ni_en_claro_llega_al_cliente():
         "04A224B2", "f.jpg", "tag_id",
     ):
         assert secreto not in text, secreto
-    assert "[redacted]" in text  # el person_id no seudonimizado se redactó, no se envió
+    assert "p-7f3a" not in text and "h-" in text  # solo HMAC
 
 
 def test_un_fallo_del_cliente_no_rompe_el_bus():
@@ -196,6 +196,37 @@ def test_un_fallo_del_cliente_no_rompe_el_bus():
     store = TraceStore()
     tracer = LangfuseDecisionTracer(Broken(), store)
     record(store, tracer, Topic.EVENTS, decision_envelope())  # no lanza
+
+
+def test_ids_no_confiables_del_envelope_y_la_cadena_se_hashean():
+    client, store = FakeClient(), TraceStore()
+    tracer = LangfuseDecisionTracer(client, store)
+    evt = MetadataEnvelope(
+        source="event", stream_id="employee-4411@corp",
+        payload={"type": "x"}, event_id="employee-4411@corp", correlation_id="jperez@corp",
+    )
+    record(store, tracer, Topic.EVENTS, evt)
+    text = json.dumps(client.calls, default=str)
+    assert "employee" not in text and "jperez" not in text and "corp" not in text
+
+
+def test_reentrega_no_duplica_la_traza():
+    client, store = FakeClient(), TraceStore()
+    tracer = LangfuseDecisionTracer(client, store)
+    env = decision_envelope()
+    record(store, tracer, Topic.EVENTS, env)
+    n = len(client.calls)
+    record(store, tracer, Topic.EVENTS, env)  # misma event_id
+    assert len(client.calls) == n
+
+
+def test_memoria_de_deduplicacion_acotada():
+    client, store = FakeClient(), TraceStore()
+    tracer = LangfuseDecisionTracer(client, store, dedupe_size=2)
+    for i in range(3):
+        record(store, tracer, Topic.EVENTS,
+               MetadataEnvelope(source="event", payload={"type": "x"}, event_id=f"{i:08x}"))
+    assert len(tracer._seen) == 2
 
 
 def test_close_hace_flush_y_shutdown():

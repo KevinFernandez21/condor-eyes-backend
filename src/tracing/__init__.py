@@ -5,15 +5,15 @@ from .langfuse_sink import (
     LangfuseDecisionTracer,
     create_tracer_from_env,
 )
-from .privacy import is_pseudonym, sanitize_envelope, sanitize_payload
+from .privacy import PrivacyFilter, sanitize_envelope, sanitize_payload
 from .store import TraceStore
 
 __all__ = [
     "LangfuseConfig",
     "LangfuseDecisionTracer",
+    "PrivacyFilter",
     "TraceStore",
     "create_tracer_from_env",
-    "is_pseudonym",
     "sanitize_envelope",
     "sanitize_payload",
 ]

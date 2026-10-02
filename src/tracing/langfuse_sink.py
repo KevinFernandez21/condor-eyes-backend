@@ -29,13 +29,14 @@ from __future__ import annotations
 
 import logging
 import os
+from collections import OrderedDict
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from typing import Any
 
 from bus import Topic
 
-from .privacy import sanitize_payload
+from .privacy import PrivacyFilter
 from .store import TraceStore
 
 logger = logging.getLogger(__name__)
@@ -84,9 +85,7 @@ def classify(topic: Topic, data: Mapping[str, Any]) -> str | None:
     return None
 
 
-_HOP_FIELDS = (
-    "event_id", "topic", "source", "stream_id", "causation_id", "created_at", "hop_latency_ms",
-)
+_DEDUPE_SIZE = 4096
 
 
 class LangfuseDecisionTracer:
@@ -96,15 +95,30 @@ class LangfuseDecisionTracer:
     plano, y cualquier fallo se registra sin tocar el bus.
     """
 
-    def __init__(self, client: Any, store: TraceStore) -> None:
+    def __init__(
+        self,
+        client: Any,
+        store: TraceStore,
+        privacy: PrivacyFilter | None = None,
+        dedupe_size: int = _DEDUPE_SIZE,
+    ) -> None:
         self._client = client
         self._store = store
+        self._privacy = privacy or PrivacyFilter.from_env()
+        self._seen: OrderedDict[str, None] = OrderedDict()
+        self._dedupe_size = max(1, dedupe_size)
         self._warned = False
 
     def on_message(self, topic: Topic, data: dict[str, Any]) -> None:
         name = classify(Topic(topic), data)
         if name is None:
             return
+        event_id = str(data.get("event_id"))
+        if event_id in self._seen:  # reentrega: el mismo mensaje no se exporta dos veces
+            return
+        self._seen[event_id] = None
+        while len(self._seen) > self._dedupe_size:
+            self._seen.popitem(last=False)
         try:
             self._export(name, data)
         except Exception:
@@ -113,20 +127,22 @@ class LangfuseDecisionTracer:
                 logger.warning("Langfuse no pudo registrar '%s'; se ignora", name, exc_info=True)
 
     def _export(self, name: str, data: dict[str, Any]) -> None:
-        payload = sanitize_payload(data.get("payload") or {})
+        payload = self._privacy.payload(data.get("payload") or {})
         evidence = payload.pop("evidence", [])
         trace = self._store.get(data.get("correlation_id") or data["event_id"]) or {}
-        chain = [{k: hop.get(k) for k in _HOP_FIELDS} for hop in trace.get("hops", [])]
-        output = {**payload, "end_to_end_ms": trace.get("end_to_end_ms")}
+        chain = [self._privacy.hop(hop) for hop in trace.get("hops", [])]
+        end_to_end = trace.get("end_to_end_ms")
+        output = {**payload, "end_to_end_ms": end_to_end if isinstance(end_to_end, int | float) else None}
+        envelope = self._privacy.envelope({**data, "payload": {}})
         metadata = {
             "decision_engine": "fusion_rules" if name == "fusion.decision" else "rules",
             "llm": False,
-            "topic": data.get("topic"),
-            "source": data.get("source"),
-            "event_id": data.get("event_id"),
-            "correlation_id": data.get("correlation_id"),
+            "topic": envelope["topic"],
+            "source": envelope["source"],
+            "event_id": envelope["event_id"],
+            "correlation_id": envelope["correlation_id"],
         }
-        trace_id = self._client.create_trace_id(seed=data["event_id"])
+        trace_id = self._client.create_trace_id(seed=envelope["event_id"])
         span = self._client.start_observation(
             trace_context={"trace_id": trace_id},
             name=name,

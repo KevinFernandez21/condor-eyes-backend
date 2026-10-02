@@ -75,7 +75,7 @@ async def _publish_synthetic(runtime: AgentRuntime, period: float) -> None:
                 Topic.EVENTS,
                 {
                     "decision_id": f"dec-{n:04d}",
-                    "outcome": rng.choice(["corroborated", "uncorroborated"]),
+                    "outcome": rng.choice(["corroborated", "alert"]),
                     "confidence": round(rng.uniform(0.4, 0.95), 2),
                     "zone_id": zone,
                     "stream_id": camera,
