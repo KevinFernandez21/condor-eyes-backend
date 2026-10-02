@@ -1,7 +1,7 @@
 "use strict";
 // Renderizador sin dependencias. Toda la lógica de vista vive en Python
-// (src/dashboard/viewmodel.py); aquí solo se pinta. Nunca se usa innerHTML con
-// datos del bus: todo entra por textContent.
+// (src/dashboard/viewmodel.py); aquí solo se pinta. Nunca se inserta HTML con
+// datos del bus: todo entra como nodos de texto (textContent).
 
 const SVG_NS = "http://www.w3.org/2000/svg";
 const POLL_MS = 1000;

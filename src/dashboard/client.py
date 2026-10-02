@@ -105,8 +105,14 @@ async def ws_loop(
     backoff = backoff or Backoff()
     while True:
         try:
+            # Sin cabecera Origin (cliente servidor-a-servidor): la API lo permite.
+            # El token va por cabecera, nunca en la URL.
             async with connect(
-                config.ws_url(), open_timeout=5, ping_interval=20, max_size=2**21
+                config.ws_url(),
+                additional_headers=config.headers(),
+                open_timeout=5,
+                ping_interval=20,
+                max_size=2**21,
             ) as ws:
                 async for raw in ws:
                     try:
@@ -120,7 +126,6 @@ async def ws_loop(
         except asyncio.CancelledError:
             raise
         except Exception as exc:  # noqa: BLE001
-            # websockets no incluye la URL (con token) en el mensaje de estos errores.
             state.on_ws_closed(describe_error(exc))
         delay = backoff.next()
         logger.info("WS desconectado; reintento en %.1f s", delay)

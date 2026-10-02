@@ -36,11 +36,16 @@ def test_config_from_env_defaults_and_overrides():
     assert cfg.token == "t" and cfg.site_map_path == "x.toml"
 
 
-def test_config_ws_url_adds_token_query_and_scheme():
-    cfg = DashboardConfig(api_url="https://h:1", token="a b")
-    assert cfg.ws_url().startswith("wss://h:1/ws")
-    assert "token=a+b" in cfg.ws_url()
-    assert "token" not in DashboardConfig(api_url="http://h:1").ws_url()
+def test_config_ws_url_has_scheme_and_never_carries_the_token():
+    cfg = DashboardConfig(api_url="https://h:1", token="secreto")
+    assert cfg.ws_url() == "wss://h:1/ws"
+    assert DashboardConfig(api_url="http://h:1/").ws_url() == "ws://h:1/ws"
+    assert "secreto" not in cfg.ws_url()
+
+
+def test_config_headers_carry_the_bearer_token_for_http_and_ws():
+    assert DashboardConfig(token="t").headers() == {"Authorization": "Bearer t"}
+    assert DashboardConfig().headers() == {}
 
 
 @pytest.mark.parametrize("raw", ["", "   "])

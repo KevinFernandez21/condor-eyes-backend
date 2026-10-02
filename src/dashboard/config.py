@@ -5,7 +5,6 @@ from __future__ import annotations
 import os
 from collections.abc import Mapping
 from dataclasses import dataclass
-from urllib.parse import urlencode
 
 DEFAULT_API_URL = "http://127.0.0.1:8000"
 DEFAULT_SITE_MAP = "configs/site_map.toml"
@@ -32,17 +31,14 @@ class DashboardConfig:
         )
 
     def ws_url(self) -> str:
-        """URL del WebSocket; el token va por query porque el navegador/cliente
-        WS de la API no admite cabeceras (ver docs/observability-api.md)."""
+        """URL del WebSocket. El token NO va en la URL (acabaría en logs): el
+        cliente lo envía en la cabecera ``Authorization`` (ver ``headers``)."""
         base = self.api_url.rstrip("/")
         if base.startswith("https://"):
             base = "wss://" + base[len("https://") :]
         elif base.startswith("http://"):
             base = "ws://" + base[len("http://") :]
-        url = f"{base}/ws"
-        if self.token:
-            url += "?" + urlencode({"token": self.token})
-        return url
+        return f"{base}/ws"
 
     def headers(self) -> dict[str, str]:
         return {"Authorization": f"Bearer {self.token}"} if self.token else {}
