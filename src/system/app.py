@@ -17,13 +17,9 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import math
-import os
-import threading
 import time
 from collections.abc import Mapping
 from contextlib import suppress
-from pathlib import Path
 from typing import Any, Protocol
 
 from agents import AgentRuntime
@@ -32,11 +28,9 @@ from bus import InMemoryHub, MetadataEnvelope, Topic
 from comms import BusTap
 from comms.api import check_bind, create_app
 from comms.server import CommsServer
-from compare import FakeDetector
 from compare.detectors import Detector
 from pipeline import (
     BackoffPolicy,
-    Frame,
     LiveVideoPipeline,
     MetadataPublisher,
     PipelineConfig,
@@ -47,13 +41,13 @@ from pipeline import (
 
 from .api import RunnerCommsHandler, RunnerView
 from .config import SystemConfig
+from .detection import RunnerDetector
 from .fusion_service import FusionService
 from .plugins import PluginRegistry
 from .simulators import (
     ActuatorSimulator,
     IdentitySimulator,
     LocationSimulator,
-    MovingDetector,
     TagReplay,
 )
 from .sources import PLACEHOLDER_URI, FileSourceFactory, fake_source_factory
@@ -75,27 +69,6 @@ class Component(Protocol):
     async def stop(self) -> None: ...
 
     def health(self) -> dict[str, Any]: ...
-
-
-def _clean_detections(raw: Any) -> list[dict[str, Any]]:
-    """Reduce la salida del detector a primitivas JSON finitas (sin numpy)."""
-    out: list[dict[str, Any]] = []
-    for det in raw or []:
-        try:
-            box = [float(v) for v in det["xyxy"]]
-            item: dict[str, Any] = {
-                "xyxy": box,
-                "cls": int(det["cls"]),
-                "conf": float(det["conf"]),
-            }
-        except (KeyError, TypeError, ValueError):
-            continue
-        if len(box) != 4 or not all(math.isfinite(v) for v in (*box, item["conf"])):
-            continue
-        if isinstance(det.get("label"), str):
-            item["label"] = det["label"]
-        out.append(item)
-    return out
 
 
 class SystemApp:
@@ -121,16 +94,7 @@ class SystemApp:
         self._server: CommsServer | None = None
         self._plugins = plugins or PluginRegistry()
         self._source_factory = source_factory
-        self._detector: Detector | None = detector
-        self._detector_injected = detector is not None
-        self._detector_lock = threading.Lock()  # infer en curso vs close
-        self._closing = False
-        self._detector_state: dict[str, Any] = {
-            "status": "starting",
-            "detail": "",
-            "name": None,
-            "errors": 0,
-        }
+        self._detection = RunnerDetector(config.detector, detector)
         self._event_sink = MemoryEventSink(config.recent_limit)
         self._alert_sink = MemoryAlertSink(config.recent_limit)
         self._runtime: AgentRuntime | None = None
@@ -323,121 +287,10 @@ class SystemApp:
             return FileSourceFactory(cam.path, cam.fps), PLACEHOLDER_URI
         return opencv_source_factory, f"usb:{cam.device_index}"
 
-    def _make_detector(self) -> Detector | None:
-        kind = self.config.detector.kind
-        if kind == "none":
-            return None
-        if kind == "fake":
-            return FakeDetector(latency_ms=1.0)
-        if kind == "moving":
-            return MovingDetector()
-        return self._build_yolo()
-
-    def _weights_path(self) -> str:
-        """Prioridad: ``CONDOR_WEIGHTS`` > ``[detector].weights`` > surveillance.toml."""
-        det = self.config.detector
-        env = os.environ.get("CONDOR_WEIGHTS", "").strip()
-        if env:
-            return env
-        if det.weights:
-            return det.weights
-        from surveillance.detector import load_surveillance_config
-
-        weights = load_surveillance_config(det.config_path).model
-        if not Path(weights).is_absolute():
-            weights = str(Path(det.config_path).resolve().parent.parent / weights)
-        return weights
-
-    def _build_yolo(self) -> Detector:
-        det = self.config.detector
-        weights = self._weights_path()
-        if not Path(weights).is_file():
-            raise FileNotFoundError(
-                f"Pesos de YOLOv8n no encontrados: {weights}. Colóquelos en esa ruta, "
-                "o indique otra con la variable de entorno CONDOR_WEIGHTS o con "
-                "[detector].weights en configs/system.toml. Se obtienen del asset "
-                "oficial 'yolov8n.pt' de ultralytics; no se descarga nada automáticamente."
-            )
-        from surveillance.detector import SurveillanceDetector, load_surveillance_config
-
-        device = "0"
-        try:
-            import torch
-
-            if not torch.cuda.is_available():
-                device = "cpu"
-        except ImportError:
-            device = "cpu"
-        return SurveillanceDetector(
-            load_surveillance_config(det.config_path, model=weights, device=device)
-        )
-
-    def _prepare_detector(self) -> None:
-        """Construye y calienta el detector (bloqueante; corre en un hilo)."""
-        state = self._detector_state
-        try:
-            if not self._detector_injected:
-                self._detector = self._make_detector()
-            if self._detector is None:
-                state.update(status="disabled", detail="sin detector", name=None)
-                return
-            state["name"] = self._detector.name
-            self._detector.warmup(1)
-            state.update(status="ok", detail=self._detector.name)
-        except Exception as exc:  # noqa: BLE001 - sin detector el sistema sigue (sin detecciones)
-            state.update(
-                status="degraded",
-                detail=f"{type(exc).__name__}: {exc}",
-                errors=state["errors"] + 1,
-            )
-            self._close_detector()
-            logger.warning("Detector degradado: %s", state["detail"])
-
-    def _close_detector(self) -> None:
-        """Cierra el detector esperando a que termine la inferencia en curso."""
-        self._closing = True
-        with self._detector_lock:
-            detector, self._detector = self._detector, None
-        if detector is not None:
-            with suppress(Exception):
-                detector.close()
-
-    def _process(self, stream_id: str, frame: Frame) -> list[Mapping[str, Any]] | None:
-        """Inferencia del lado del pipeline: del frame solo salen detecciones."""
-        if self._closing:
-            return None
-        with self._detector_lock:
-            detector = self._detector
-            if detector is None or self._closing:
-                return None
-            try:
-                raw = detector.infer(frame.data)
-            except Exception as exc:  # noqa: BLE001 - un frame malo no tumba el pipeline
-                state = self._detector_state
-                state.update(
-                    status="degraded",
-                    detail=f"{type(exc).__name__}: {exc}",
-                    errors=state["errors"] + 1,
-                )
-                return None
-        try:
-            detections: list[Mapping[str, Any]] = list(_clean_detections(raw))
-        except Exception as exc:  # noqa: BLE001 - un frame malo no tumba el pipeline
-            state = self._detector_state
-            state.update(
-                status="degraded",
-                detail=f"{type(exc).__name__}: {exc}",
-                errors=state["errors"] + 1,
-            )
-            return None
-        if self._detector_state["status"] == "degraded":
-            self._detector_state.update(status="ok", detail=detector.name)
-        return detections
-
     async def _start_pipeline(self) -> None:
         cfg = self.config
         loop = asyncio.get_running_loop()
-        await loop.run_in_executor(None, self._prepare_detector)
+        await loop.run_in_executor(None, self._detection.prepare)
         factory, uri = self._build_source_factory()
         publisher = MetadataPublisher(self._hub, loop, source="pipeline")
         self._pipeline = LiveVideoPipeline(
@@ -446,7 +299,7 @@ class SystemApp:
                 backoff=BackoffPolicy(initial=1.0, maximum=10.0),
                 join_timeout=cfg.shutdown_timeout_s,
             ),
-            processor=self._process,
+            processor=self._detection.processor,
             publisher=publisher,
         )
         self._pipeline.add_source(StreamSource(cfg.camera.stream_id, uri))
@@ -487,7 +340,7 @@ class SystemApp:
         cfg = self.config
         out: dict[str, dict[str, Any]] = {
             "camera": self._camera_health(),
-            "detector": dict(self._detector_state),
+            "detector": self._detection.health(),
         }
         fusion = self._by_name.get("fusion")
         out["fusion"] = (
@@ -568,5 +421,5 @@ class SystemApp:
                 await self._runtime.wait_idle(timeout=self.config.shutdown_timeout_s)
             await self._runtime.stop()
         await self._hub.close()
-        await loop.run_in_executor(None, self._close_detector)
+        await loop.run_in_executor(None, self._detection.close)
         self._running = False

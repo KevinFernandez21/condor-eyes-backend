@@ -504,3 +504,34 @@ async def test_telemetria_simulada_no_ensucia_events():
     assert not kinds_events & {"location.estimate", "identity.result", "ptz.command"}
     kinds_all = {m.payload.get("kind") for _, m in app.hub.history}
     assert {"location.estimate", "identity.result", "ptz.command"} <= kinds_all
+
+
+async def test_detecciones_malformadas_se_descartan_y_se_cuentan():
+    class MessyDetector:
+        name = "sucio"
+
+        def warmup(self, n: int = 5) -> None:
+            return None
+
+        def infer(self, frame):
+            return [
+                {"xyxy": [0, 0, 10, 10], "cls": 0, "conf": 0.9},
+                {"xyxy": [0, 0, 10], "cls": 0, "conf": 0.9},
+                {"xyxy": [0, 0, 10, 10], "cls": 0, "conf": float("nan")},
+                {"cls": 0, "conf": 0.5},
+            ]
+
+        def close(self) -> None:
+            pass
+
+    app = SystemApp(fast_config("sim"), plugins=no_plugins(), detector=MessyDetector())
+    await app.start()
+    try:
+        assert await wait_for(lambda: topic_count(app, Topic.DETECTIONS) > 2)
+        det = app.snapshot()["components"]["detector"]
+        assert det["malformed_dropped"] >= 3
+        assert det["status"] == "ok"
+        msg = next(m for t, m in app.hub.history if t is Topic.DETECTIONS)
+        assert len(msg.payload["detections"]) == 1
+    finally:
+        await app.stop()

@@ -150,6 +150,17 @@ Orden: latido de salud, pipeline de video (une hilos), componentes, vaciado de
 colas del runtime, `runtime.stop()`, cierre del hub, cierre del detector. Las
 pruebas verifican que no quedan tareas asyncio ni hilos `video-*`.
 
+## Seguimiento: unificar con `DetectorProcessor` (#40)
+
+Todo el cableado del detector vive en `src/system/detection.py`
+(`RunnerDetector`: construir, warmup, `processor` del pipeline, cierre).
+Cuando #40 llegue a `main` con `pipeline.detection.DetectorProcessor`, se
+sustituye `RunnerDetector` por ese adaptador en un solo punto
+(`SystemApp._detection`) y se elimina el duplicado. Se conserva la política
+actual: una detección malformada se **descarta y se cuenta**
+(`components.detector.malformed_dropped`), sin tumbar el frame; se propondrá a
+#40.
+
 ## Fuera de alcance
 
 UI, Jetson/DeepStream y Docker Compose (#18).
