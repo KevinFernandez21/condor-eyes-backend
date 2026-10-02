@@ -29,8 +29,25 @@ def test_static_assets_are_served():
     assert client.get("/static/style.css").status_code == 200
 
 
-def test_app_js_never_uses_innerhtml():
-    assert "innerHTML" not in _client().get("/static/app.js").text
+@pytest.mark.parametrize("name", ["common.js", "agents.js", "cameras.js", "app.js"])
+def test_scripts_are_served_and_never_insert_html(name):
+    response = _client().get(f"/static/{name}")
+    assert response.status_code == 200
+    for forbidden in ("innerHTML", "outerHTML", "insertAdjacentHTML", "document.write", "eval("):
+        assert forbidden not in response.text
+
+
+def test_index_has_both_views_and_navigation():
+    html = _client().get("/").text
+    for needle in ('id="view-agents"', 'id="view-cams"', 'data-view="agents"', 'data-view="cams"',
+                   'id="cam-grid"', 'id="tl"', 'id="review-log"', 'id="toasts"'):
+        assert needle in html
+
+
+def test_api_state_includes_multicamera_fields():
+    body = _client().get("/api/state").json()
+    assert {"cameras", "timeline", "components"} <= set(body)
+    assert body["timeline"]["series"] == {"all": []}
 
 
 def test_api_state_shape_and_topic_filter():
