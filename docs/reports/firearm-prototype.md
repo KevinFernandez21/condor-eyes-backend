@@ -79,6 +79,41 @@ postproceso). El modelo en sí tarda menos de 1 ms por imagen en esta GPU.
 - `reports/evaluation_annotated_640.mp4` (fuera de Git): incluye un tramo negativo y detecciones correctas, pero dura **6 s**.
 - **Pendiente:** un demo de ≥ 30 s como pide el issue. Hace falta metraje real más largo con escenas positivas y negativas.
 
+## v2: Simuletic + Open Images (2026-10-01)
+
+- **Modelo:** YOLOv8n COCO afinado con Simuletic (108 imágenes) + Open Images V7 (2194
+  con arma y 1499 negativos), 640 px, 60 épocas, batch 16, 37 min. La configuración por
+  defecto (`configs/firearm.toml`) ya apunta a `runs/firearm/yolov8n_firearm_v2/weights/best.pt`.
+- **Comparación** en los mismos tests (`weights/compare_firearm.sh`, umbral `conf=0.35`):
+
+| Test (`weapon`) | v1 (solo Simuletic) | **v2 (+ Open Images)** |
+|---|---|---|
+| Simuletic Scene6 (CCTV sintético, held-out): precisión / recall | 0,497 / 0,467 | **1,000** / 0,448 |
+| Simuletic Scene6: mAP50 / mAP50-95 | 0,491 / 0,119 | **0,616** / **0,210** |
+| Open Images test (320 imágenes reales): precisión / recall | 0,010 / 0,003 | **0,829** / **0,582** |
+| Open Images test: mAP50 / mAP50-95 | 0,001 / 0,000 | **0,661** / **0,443** |
+| 500 negativos difíciles (teléfono, paraguas, herramientas…): imágenes con falsa alarma | 98 (19,6 %) | **19 (3,8 %)** |
+| Video del pasillo: frames con el rifle detectado (de 106 con el rifle visible) | 18 (17 %), solo al final | **73 (69 %)**, desde el frame 40 |
+| Video del pasillo: falsas alarmas sin rifle visible (frames 0–38) | 0 | **0** |
+
+`person` en Simuletic Scene6 sube de mAP50 0,856 a 0,938.
+
+**Lectura:**
+
+- v1 no generalizaba nada fuera de lo sintético: 0,1 % de AP en imágenes reales y
+  falsas alarmas en una de cada cinco imágenes con teléfono o herramienta.
+- v2 detecta armas reales, cuadruplica los frames detectados en el video real y reduce
+  las falsas alarmas en negativos difíciles a una quinta parte.
+- En la escena sintética lejana (Scene6) el recall no mejora (0,45): las armas de pocos
+  píxeles siguen siendo el límite. Para eso hace falta metraje CCTV real, no fotos.
+
+**Límites que siguen:**
+
+- Las fotos de Open Images suelen mostrar el arma grande y en primer plano, a diferencia
+  del CCTV real.
+- 19 de los 500 negativos todavía generan alarma.
+- El demo de 30 s con metraje real sigue pendiente.
+
 ## Conclusiones y siguientes pasos
 
 1. El flujo completo funciona en la laptop: datos → entrenamiento → evaluación → video anotado con métricas.

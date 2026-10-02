@@ -10,7 +10,7 @@ from typing import Any
 @dataclass
 class FirearmConfig:
     # .pt entrenado (laptop) o engine TensorRT FP16 (Jetson, a futuro).
-    model: str = "runs/firearm/yolov8n_simuletic/weights/best.pt"
+    model: str = "runs/firearm/yolov8n_firearm_v2/weights/best.pt"
     conf: float = 0.35
     iou: float = 0.5
     imgsz: int = 640
