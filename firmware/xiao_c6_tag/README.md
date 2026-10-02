@@ -32,6 +32,7 @@ Se cambia con `--build-property "build.extra_flags=-DNOMBRE=valor"` en `compile`
 | Macro | Defecto | Efecto |
 |-------|---------|--------|
 | `ADV_INTERVAL_MS` | `100` | Periodo entre anuncios; cada periodo sube `seq` en 1. |
+| `SEQ_BLOCK` | `1000` | Tamaño del bloque de `seq` reservado en NVS (ver abajo). |
 | `TAG_ID_OVERRIDE` | `""` | ID de 12 dígitos hex. Vacío = MAC Bluetooth del chip. |
 | `BATTERY_ADC_PIN` | `-1` | Pin ADC de la batería; `-1` anuncia `0xFF` (desconocida). |
 | `TX_POWER_LEVEL` | `ESP_PWR_LVL_P3` | Potencia de TX; recalibrar el RSSI si se cambia. |
@@ -41,9 +42,15 @@ Se cambia con `--build-property "build.extra_flags=-DNOMBRE=valor"` en `compile`
 Una línea por anuncio; al abrir el puerto la placa se reinicia y emite `BOOT`:
 
 ```
-BOOT fw=1.0.0 tag=58E6C515220A name=CE-TAG-220A interval_ms=100
-ADV tag=58E6C515220A seq=4225449557 bat=255
+BOOT fw=1.0.0 tag=58E6C515220A name=CE-TAG-220A interval_ms=100 seq_start=2000
+ADV tag=58E6C515220A seq=2000 bat=255
 ```
 
-`seq` arranca en un valor aleatorio en cada arranque y sube de a 1; `bat=255` es
-batería desconocida.
+`bat=255` es batería desconocida.
+
+## `seq` entre reinicios
+
+El `seq` se guarda por bloques en NVS (`Preferences`, espacio `cetag`, clave `seqblk`)
+y sigue creciendo tras cada reinicio (salta como máximo `SEQ_BLOCK`). Así el
+anti-replay de `LocationService` no rechaza al tag. Detalle en `docs/xiao-c6-tag.md`.
+Para reiniciar el contador a 0 hay que borrar la flash (`esptool erase_flash`).

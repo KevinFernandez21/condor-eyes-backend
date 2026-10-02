@@ -10,7 +10,7 @@
 #include <BLEDevice.h>
 #include <BLEAdvertising.h>
 #include <esp_mac.h>
-#include <esp_random.h>
+#include <Preferences.h>
 
 // --- Configuración --------------------------------------------------------------
 #define FW_VERSION "1.0.0"
@@ -35,12 +35,23 @@
 #define TX_POWER_LEVEL ESP_PWR_LVL_P3
 #endif
 
+// El seq debe ser monótono también entre reinicios: el anti-replay de LocationService
+// (#16) rechaza un seq menor (o 2^31 mayor) que el último visto. Se reservan bloques en
+// NVS: al arrancar se retoma desde el inicio del bloque guardado y se reserva el
+// siguiente; el valor guardado siempre es mayor que cualquier seq ya emitido.
+// Un reinicio salta como mucho SEQ_BLOCK; una escritura cada SEQ_BLOCK anuncios.
+#ifndef SEQ_BLOCK
+#define SEQ_BLOCK 1000
+#endif
+
 static const uint16_t COMPANY_ID = 0xFFFF;
 static const uint8_t PAYLOAD_VERSION = 1;
 static const uint8_t BATTERY_UNKNOWN = 0xFF;
 
 static uint8_t tagId[6];
 static uint32_t seq;
+static uint32_t seqBlockEnd;
+static Preferences prefs;
 static BLEAdvertising *advertising;
 
 static bool parseTagOverride(const char *hex, uint8_t *out) {
@@ -94,8 +105,10 @@ void setup() {
   if (!(strlen(TAG_ID_OVERRIDE) && parseTagOverride(TAG_ID_OVERRIDE, tagId))) {
     esp_read_mac(tagId, ESP_MAC_BT);
   }
-  // Arranca en un seq aleatorio para que un reinicio no repita valores recientes.
-  seq = esp_random();
+  prefs.begin("cetag", false);
+  seq = prefs.getUInt("seqblk", 0);
+  seqBlockEnd = seq + SEQ_BLOCK;
+  prefs.putUInt("seqblk", seqBlockEnd);
 
   char name[16];
   snprintf(name, sizeof(name), "CE-TAG-%02X%02X", tagId[4], tagId[5]);
@@ -111,10 +124,14 @@ void setup() {
 
   Serial.printf("BOOT fw=%s tag=%02X%02X%02X%02X%02X%02X name=%s interval_ms=%d\n", FW_VERSION,
                 tagId[0], tagId[1], tagId[2], tagId[3], tagId[4], tagId[5], name,
-                ADV_INTERVAL_MS);
+                ADV_INTERVAL_MS, (unsigned long)seq);
 }
 
 void loop() {
+  if (seq - (seqBlockEnd - SEQ_BLOCK) >= SEQ_BLOCK) {  // aritmética módulo 2^32
+    seqBlockEnd += SEQ_BLOCK;
+    prefs.putUInt("seqblk", seqBlockEnd);
+  }
   uint8_t battery = readBatteryPct();
   publishAdvertisement(battery);
   advertising->start();
