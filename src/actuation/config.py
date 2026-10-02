@@ -105,9 +105,13 @@ def _validate(cfg: ActuationConfig) -> None:
     if lim.max_speed_dps <= 0:
         raise ValueError("limits.max_speed_dps debe ser positivo")
     if not 0 < ctl.max_speed_dps <= lim.max_speed_dps:
-        raise ValueError("control.max_speed_dps debe estar en (0, limits.max_speed_dps]")
+        raise ValueError(
+            "control.max_speed_dps debe estar en (0, limits.max_speed_dps]"
+        )
     if not 0 < ctl.neutral_speed_dps <= lim.max_speed_dps:
-        raise ValueError("control.neutral_speed_dps debe estar en (0, limits.max_speed_dps]")
+        raise ValueError(
+            "control.neutral_speed_dps debe estar en (0, limits.max_speed_dps]"
+        )
     if not 0 < ctl.kp <= 1.0:
         raise ValueError("control.kp debe estar en (0, 1]")
     if not 0 <= ctl.deadband < 1:
@@ -144,13 +148,17 @@ def load_actuation_config(path: str | Path | None = None) -> ActuationConfig:
             data = tomllib.load(f).get("pan_tilt", {})
     unknown_sections = set(data) - set(_SECTIONS)
     if unknown_sections:
-        raise ValueError(f"Sección desconocida en [pan_tilt]: {sorted(unknown_sections)}")
+        raise ValueError(
+            f"Sección desconocida en [pan_tilt]: {sorted(unknown_sections)}"
+        )
     built: dict[str, Any] = {}
     for name, cls in _SECTIONS.items():
         values = data.get(name, {})
         known = {f.name for f in fields(cls)}
         unknown = set(values) - known
         if unknown:
-            raise ValueError(f"Claves desconocidas en [pan_tilt.{name}]: {sorted(unknown)}")
+            raise ValueError(
+                f"Claves desconocidas en [pan_tilt.{name}]: {sorted(unknown)}"
+            )
         built[name] = cls(**values)
     return ActuationConfig(**built)
