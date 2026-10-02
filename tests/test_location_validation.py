@@ -84,6 +84,15 @@ def test_impossible_transition_between_non_adjacent_zones(validator):
     assert result is RejectReason.IMPOSSIBLE_TRANSITION
 
 
+def test_weak_far_reading_is_not_presence_evidence(validator):
+    # Un nodo lejano oye débilmente el tag del lobby: no es una transición imposible.
+    assert validator.validate(obs(node="N0001", seq=1, t=0, rssi=-55), at(0)) is None
+    assert validator.validate(obs(node="N0004", seq=1, t=0, rssi=-86), at(0)) is None
+    # Pero una lectura fuerte desde una zona no vecina sí lo es.
+    strong = validator.validate(obs(node="N0004", seq=2, t=1, rssi=-60), at(1))
+    assert strong is RejectReason.IMPOSSIBLE_TRANSITION
+
+
 def test_adjacent_zones_are_allowed_at_the_same_time(validator):
     assert validator.validate(obs(node="N0001", seq=1, t=0), at(0)) is None
     assert validator.validate(obs(node="N0002", seq=1, t=0.1), at(0.1)) is None

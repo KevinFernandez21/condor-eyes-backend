@@ -64,17 +64,20 @@ class ObservationValidator:
             if diff >= _SEQ_HALF:
                 return RejectReason.REPLAY
 
-        zones = self._zone_ts.setdefault(obs.tag_id, {})
-        for other_zone, other_ts in zones.items():
-            if other_zone == zone or cfg.are_adjacent(zone, other_zone):
-                continue
-            gap = abs((obs.timestamp - other_ts).total_seconds())
-            if gap < cfg.transition_min_s:
-                return RejectReason.IMPOSSIBLE_TRANSITION
+        presence = obs.rssi_dbm >= cfg.transition_min_rssi_dbm
+        if presence:
+            for other_zone, other_ts in self._zone_ts.get(obs.tag_id, {}).items():
+                if other_zone == zone or cfg.are_adjacent(zone, other_zone):
+                    continue
+                gap = abs((obs.timestamp - other_ts).total_seconds())
+                if gap < cfg.transition_min_s:
+                    return RejectReason.IMPOSSIBLE_TRANSITION
 
         self._seq[key] = (obs.sequence, received_at)
-        if zone not in zones or obs.timestamp > zones[zone]:
-            zones[zone] = obs.timestamp
+        if presence:
+            zones = self._zone_ts.setdefault(obs.tag_id, {})
+            if zone not in zones or obs.timestamp > zones[zone]:
+                zones[zone] = obs.timestamp
         return None
 
     def prune(self, now: datetime) -> None:

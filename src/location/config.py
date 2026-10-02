@@ -38,6 +38,7 @@ class LocationConfig:
     rssi_min_dbm: int = -127
     rssi_max_dbm: int = 0
     transition_min_s: float = 5.0
+    transition_min_rssi_dbm: float = -80.0
     rssi_floor_dbm: float = -95.0
     rssi_strong_dbm: float = -60.0
     margin_full_db: float = 12.0
@@ -141,6 +142,12 @@ def parse_config(raw: Mapping[str, Any]) -> LocationConfig:
         ),
         transition_min_s=_number(
             valid, "validation", "transition_min_s", defaults.transition_min_s
+        ),
+        transition_min_rssi_dbm=_number(
+            valid,
+            "validation",
+            "transition_min_rssi_dbm",
+            defaults.transition_min_rssi_dbm,
         ),
         rssi_floor_dbm=_number(
             conf, "confidence", "rssi_floor_dbm", defaults.rssi_floor_dbm

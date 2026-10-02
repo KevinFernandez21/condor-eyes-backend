@@ -25,6 +25,9 @@ rssi_min_dbm = -127
 rssi_max_dbm = 0
 # Un tag no puede verse en zonas no vecinas con menos de estos segundos de diferencia.
 transition_min_s = 5
+# Solo las lecturas con al menos este RSSI cuentan como presencia para esa regla
+# (un nodo lejano puede oír débilmente un tag de otra zona sin que sea imposible).
+transition_min_rssi_dbm = -80
 
 [confidence]
 # RSSI suavizado que equivale a señal débil (0.0) y fuerte (1.0).
