@@ -6,7 +6,7 @@ Todo ocurre en el bucle de asyncio del servidor del dashboard; no hay hilos.
 
 from __future__ import annotations
 
-from collections import deque
+from collections import OrderedDict, deque
 from collections.abc import Iterable, Mapping, Sequence
 from datetime import UTC, datetime
 from typing import Any
@@ -37,7 +37,7 @@ class DashboardState:
         self._decisions: deque[dict[str, Any]] = deque(maxlen=alert_size)
         self._locations: deque[dict[str, Any]] = deque(maxlen=200)
         self._streams: deque[dict[str, Any]] = deque(maxlen=200)
-        self._seen_decisions: set[str] = set()
+        self._seen_decisions: OrderedDict[str, None] = OrderedDict()  # índice acotado
         self._agents: list[dict[str, Any]] = []
         self._topics: list[dict[str, Any]] = []
         self._api_health: dict[str, Any] | None = None
@@ -104,13 +104,14 @@ class DashboardState:
             self._streams.appendleft(_slim(env))
 
     def _add_decision(self, env: Mapping[str, Any]) -> None:
-        key = str(env.get("event_id") or (env.get("payload") or {}).get("decision_id"))
-        if key in self._seen_decisions:
-            return
-        if len(self._decisions) == self._decisions.maxlen:
-            old = self._decisions[-1]
-            self._seen_decisions.discard(str(old.get("event_id")))
-        self._seen_decisions.add(key)
+        key = env.get("event_id") or (env.get("payload") or {}).get("decision_id")
+        if key is not None:  # sin ningún id no se deduplica: nunca se descarta una decisión
+            key = str(key)
+            if key in self._seen_decisions:
+                return
+            self._seen_decisions[key] = None
+            while len(self._seen_decisions) > (self._decisions.maxlen or 0):
+                self._seen_decisions.popitem(last=False)
         self._decisions.appendleft(_slim(env))
 
     # -- salida -------------------------------------------------------------

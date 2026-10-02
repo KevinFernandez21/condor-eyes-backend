@@ -124,3 +124,34 @@ def test_state_poll_seeds_alerts_without_duplicates():
     state.on_ws_message({"type": "envelope", "data": d})
     state.on_poll({"agents": [], "topics": [], "health": {"status": "ok"}, "decisions": [d]})
     assert len(state.snapshot()["alerts"]) == 1
+
+
+def _decision(eid=None, did="d"):
+    data = {"topic": "events", "source": "fusion", "created_at": "2026-01-01T00:00:00+00:00",
+            "payload": {"decision_id": did, "outcome": "alert"}}
+    if eid is not None:
+        data["event_id"] = eid
+    return {"type": "envelope", "data": data}
+
+
+def test_state_decisions_without_any_id_are_not_deduplicated():
+    state = DashboardState()
+    state.on_ws_message(_decision(None, None))
+    state.on_ws_message(_decision(None, None))
+    assert len(state.snapshot()["alerts"]) == 2
+
+
+def test_state_dedup_index_is_bounded_like_the_decisions():
+    state = DashboardState(alert_size=5)
+    for i in range(500):
+        state.on_ws_message(_decision(None, f"d{i}"))
+    assert len(state._seen_decisions) <= 5
+    assert len(state.snapshot()["alerts"]) == 5
+
+
+def test_state_dedup_still_works_with_event_id():
+    state = DashboardState(alert_size=3)
+    for i in range(3):
+        state.on_ws_message(_decision(f"e{i}", f"d{i}"))
+    state.on_ws_message(_decision("e2", "d2"))  # repetido
+    assert len(state.snapshot()["alerts"]) == 3
