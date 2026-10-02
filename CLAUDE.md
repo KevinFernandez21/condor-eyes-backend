@@ -6,19 +6,28 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 Proyecto en Fase 0: videovigilancia multiagente para **Jetson Orin Nano 8GB**, todo en **Python + AgentScope**, objetivo 4-8 streams 1080p con inferencia compartida. Se realizará un **entorno de campo multiagéntico**: el sistema se despliega y opera en campo, en el edge, como un conjunto de agentes AgentScope coordinados. Reemplaza al repo anterior `condor-eye-backend` (ISR para drones); no se reutiliza nada de él.
 
-Lo implementado incluye `src/compare/` (harness de benchmark de detectores), `src/firearm/` (prototipo de detección de armas en video grabado, issue #1; ver `docs/firearm-detection.md`) y el scaffold de la arquitectura multiagente en `src/agents/`, `src/bus/` y `src/pipeline/`. `src/events/` implementa el detector de eventos del agente `event` (merodeo, intrusión, aglomeración; reglas sobre tracks, issue #12; ver `docs/events-benchmark.md`, CLI `uv run python scripts/events.py {benchmark,evaluate}`). El modelo base ya está decidido: **YOLOv8n** (ARCH-002).
+Lo implementado incluye `src/compare/` (harness de benchmark de detectores), `src/firearm/` (prototipo de detección de armas en video grabado, issue #1; ver `docs/firearm-detection.md`) y los módulos de percepción `src/events/` (merodeo, intrusión, aglomeración; issue #12; `docs/events-benchmark.md`, CLI `scripts/events.py`), `src/reid/` (re-ID entre cámaras con estado inconcluso; `docs/reid-evaluation.md`, `scripts/reid.py`), `src/faceid/` (verificación facial con consentimiento; `docs/face-verification.md`, `scripts/faceid.py`) y `src/surveillance/` (detector de personas y objetos CCTV; `docs/surveillance-detection.md`, `scripts/surveillance.py`). El modelo base ya está decidido: **YOLOv8n** (ARCH-002).
 
-**Máquina de desarrollo actual: laptop x86_64 con RTX 5080 Laptop 16 GB (Windows).** Entrenamiento, inferencia y demos se validan ahí. La validación en la Jetson Orin Nano (export TensorRT `.engine`, pruebas sin OOM) queda diferida; no bloquea el trabajo actual. Los nuevos módulos multiagente definen contratos y topología, pero todavía no implementan los adaptadores de producción para GStreamer, DeepStream, TensorRT, persistencia o comunicaciones externas.
+Tras mergear #13–#17 el runtime multiagente deja de ser scaffold:
+
+- `src/bus/`: `MetadataEnvelope` estricto, `InMemoryHub` determinista y `AgentScopeHub` (AgentScope 2.x **no tiene `MsgHub`**: usa `Msg` + `Agent.observe`). Incluye `Topic.ERRORS` y `Topic.LOCATION`.
+- `src/agents/`: runtime con ciclo de vida, reintentos, idempotencia y latido (`docs/agentscope-runtime.md`).
+- `src/pipeline/`: pipeline de video en vivo compartido y `MetadataPublisher`, que solo publica metadata (`docs/video-pipeline.md`).
+- `src/fusion/`: fusión de evidencia (`docs/evidence-fusion.md`). `src/location/`: localización por zona del tag de personal (`docs/location.md`). `src/actuation/`: nodo Pan-Tilt con ESTOP y límites mecánicos (`docs/pan-tilt.md`).
+
+**Máquina de desarrollo actual: laptop x86_64 con RTX 5080 Laptop 16 GB (Windows).** Entrenamiento, inferencia y demos se validan ahí. **Todavía no hay Jetson**: como proxy de la Orin se usa una laptop i7 de 12.ª gen con 16 GB de memoria compartida (issue #23); la validación en la Orin (export TensorRT `.engine`, pruebas sin OOM) queda diferida y no bloquea el trabajo actual. Los adaptadores de producción para DeepStream, TensorRT, persistencia y comunicaciones externas siguen pendientes.
+
+**Tag de personal:** un **XIAO ESP32-C6** por USB serie (issue #26) en lugar del ESP32-S3.
 
 ## Entorno y comandos (uv)
 
-El proyecto se gestiona con **uv**: `pyproject.toml` + `uv.lock`, Python **3.11** fijado en `.python-version` (AgentScope 2.x exige >=3.11). Dependencias: `agentscope` 2.x y `ultralytics`; grupo dev: `ruff`, `mypy`, `pytest`.
+El proyecto se gestiona con **uv**: `pyproject.toml` + `uv.lock`, Python **3.11** fijado en `.python-version` (AgentScope 2.x exige >=3.11). Dependencias: `agentscope` 2.x y `ultralytics`; grupo dev: `ruff`, `mypy`, `pytest`, `pytest-asyncio` (los tests de bus y runtime son `async`).
 
 ```bash
 uv sync                      # crea/actualiza .venv según uv.lock
 uv add <pkg>                 # dependencia nueva (nunca pip install)
 uv add --dev <pkg>           # dependencia de desarrollo
-uv run ruff check src
+uv run ruff check src tests scripts
 uv run mypy src
 uv run pytest                # tests en tests/ (pythonpath=src vía pyproject)
 uv run pytest tests/test_x.py::test_y   # un solo test
@@ -55,17 +64,17 @@ Dos planos separados. Esta separación es la regla central del diseño:
 - **Plano video**: un único pipeline GStreamer compartido (NVDEC → `nvstreammux` batch N → `nvinfer` FP16 → `nvtracker` → appsink) en `src/pipeline/`, fuera de AgentScope.
 - **Plano agentes**: siete roles AgentScope intercambian solo metadata (detecciones, tracks, eventos): `ingest` (uno por cámara), `inference` (único, escala por batch), `tracker`, `event`, `storage`, `supervisor` y `comms`.
 
-El scaffold actual se organiza así:
+La organización actual (tras mergear #13–#17):
 
-- `src/agents/`: definiciones de roles, constructor sobre `agentscope.agent.Agent` 2.x y registro canónico `MULTIAGENT_ROUTE`.
-- `src/bus/hub.py`: `MetadataHub`, `MetadataEnvelope` y tópicos tipados. Es la frontera que deberá adaptar la mensajería concreta de AgentScope.
-- `src/pipeline/shared_pipeline.py`: contrato del pipeline de video compartido, sin implementación GStreamer todavía.
-- `src/pipeline/trt_engine.py`: especificación del único engine TensorRT FP16 versionado.
+- `src/agents/`: roles, constructor sobre `agentscope.agent.Agent` 2.x, registro canónico `MULTIAGENT_ROUTE` y runtime (ciclo de vida, reintentos, idempotencia).
+- `src/bus/hub.py`: `MetadataHub`, `MetadataEnvelope` y tópicos tipados; `memory.py` (`InMemoryHub`) y `agentscope_hub.py` (`AgentScopeHub`) son los adaptadores. `subscribe` devuelve un `MetadataSubscription`.
+- `src/pipeline/`: pipeline de video compartido en vivo y `MetadataPublisher`; `trt_engine.py` especifica el único engine TensorRT FP16 versionado.
 
 Reglas de `docs/tech-stack.md` que no se deben romper:
 - Ningún frame sale del pipeline hacia el MsgHub.
 - Un solo engine TensorRT FP16 versionado y compartido por todos los streams; nunca un modelo por cámara. FP32 está prohibido en producción.
 - Los agentes usan la interfaz tipada de `src/bus/hub.py`, nunca el mecanismo de mensajería crudo.
+- **Regla de payload:** `MetadataEnvelope` valida de forma estricta y rechaza `datetime`, escalares numpy, `set`, `bytes`, arrays, `NaN` e infinitos. Solo se admiten primitivas JSON finitas (`str`, `int`, `float`, `bool`, `None`, `list`/`tuple`, `dict` con claves `str`). Convierte los escalares numpy con `float()`/`int()` y los timestamps a cadenas ISO-8601 antes de construir el sobre; no relajes la validación.
 - Solo Python (sin Rust, Go ni C++ propio). Despliegue con Docker Compose sobre JetPack 6, sin Kubernetes.
 - Ante un OOM se baja a 720p o se reduce el batch; no se duplican modelos.
 
