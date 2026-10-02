@@ -9,13 +9,13 @@ id = "laptop-webcam"   # placeholder: cámara del portátil
 source = 0
 
 [[receivers]]
-id = "N0001"           # ID de nodo del payload v1 (debe existir en configs/location.toml)
+id = "N0001"           # ID de nodo del payload v1 (definido en [zones.lobby] de configs/location.toml)
 kind = "pc-ble"        # adaptador Bluetooth del PC, junto a la cámara
-zone = "lab"
+zone = "lobby"
 
 [[zones]]
-id = "lab"
-name = "Laboratorio (frente a la cámara)"
+id = "lobby"
+name = "Zona frente a la cámara"
 receiver = "N0001"
 camera = "laptop-webcam"
 region = [0.05, 0.10, 0.95, 0.95]

@@ -1,7 +1,7 @@
 """Puente del tag BLE (XIAO ESP32-C6) hacia observaciones payload v1 (issue #26)."""
 
 from .config import SiteMap, SiteMapError, Zone, load_site_map
-from .presence import PresenceState, PresenceTracker
+from .presence import PresenceState, PresenceView
 from .protocol import TagPayload, decode_tag_payload, encode_tag_payload, normalize_tag
 from .receiver import (
     Advertisement,
@@ -17,7 +17,7 @@ __all__ = [
     "BleakAdvertisementSource",
     "FakeAdvertisementSource",
     "PresenceState",
-    "PresenceTracker",
+    "PresenceView",
     "ReceiverEvent",
     "SiteMap",
     "SiteMapError",
