@@ -1,15 +1,16 @@
 # Localización de personal por zonas (BLE + LoRa opcional)
 
-Estado: **solo lado Python, probado con simulador**. No se probó con hardware
-real (ESP32-S3, gateway LoRa); los umbrales de `configs/location.toml` son
-valores iniciales a calibrar en campo.
+Estado: lado Python probado con simulador y, para un tag y un nodo, con hardware
+real: tag **XIAO ESP32-C6** + receptor BLE del PC (`src/tagbridge`, ver
+`docs/xiao-c6-tag.md`). Sin probar: gateway LoRa y varios nodos de zona. Los
+umbrales de `configs/location.toml` son valores iniciales a calibrar en campo.
 
 Fuera de alcance: inferencia de cámara, entrenamiento de rostros, control Pan-Tilt.
 
 ## Flujo
 
 ```
-tag BLE ──anuncio──▶ nodo de zona ESP32-S3 ──JSON/binario──▶ LocationService
+tag XIAO ESP32-C6 ──anuncio BLE──▶ nodo de zona (hoy: adaptador BLE del PC) ──JSON/binario──▶ LocationService
                                                                │ 1. parseo (payload.py)
                                                                │ 2. tag enrolado (repository.py)
                                                                │ 3. validación (validation.py)
@@ -95,8 +96,10 @@ Limitaciones conocidas:
 - Entradas hostiles: JSON de más de `MAX_JSON_BYTES` (1024), tipos distintos de
   `str`/`bytes` o anidamiento profundo se devuelven como `malformed`; el
   ingestor nunca lanza por datos externos.
-- Un tag que se reinicia vuelve a `seq` baja y se rechaza como `replay` hasta
-  que supere la última vista o pase `retention_s`. Mitigación futura: campo de
+- Un tag que se reinicia y vuelve a `seq` bajo se rechaza como `replay` hasta
+  que supere la última vista o pase `retention_s`. El firmware del XIAO ESP32-C6
+  lo evita con `seq` monótono entre reinicios (bloques reservados en NVS, ver
+  `docs/xiao-c6-tag.md`); otros tags deben hacer lo mismo o usar un campo de
   época de arranque.
 - Un nodo con reloj desviado más allá de la tolerancia queda descartado
   (visible en `stats`); sincronizar con NTP o con el gateway.
@@ -183,7 +186,9 @@ canal de radio real.
 
 ## Pendiente de hardware
 
-- Firmware ESP32-S3 que emita este contrato y lea anuncios BLE.
+- Hecho: firmware del tag XIAO ESP32-C6 (`firmware/xiao_c6_tag`) y receptor del PC
+  (`src/tagbridge`) que emiten este contrato. Falta: nodos de zona ESP32 propios
+  (varias zonas) que lean anuncios BLE y reporten el JSON/binario.
 - Calibración de `tx_power`, exponente de pérdida y umbrales con mediciones reales.
 - Agente AgentScope que consuma `LocationService` y publique en `Topic.LOCATION`
   (no se registró en `MULTIAGENT_ROUTE` para no alterar la topología acordada).

@@ -4,7 +4,8 @@ La secuencia (`sequence`) la genera el tag y se incrementa en cada anuncio; el
 mismo paquete puede ser oído legítimamente por varios nodos. Por eso el estado
 anti-replay se lleva por par (tag, nodo) con aritmética de 32 bits circular.
 
-Limitación conocida: un tag que se reinicia vuelve a `sequence` bajo y sus
+Limitación conocida (el firmware del XIAO ESP32-C6 la evita con seq persistente en
+NVS): un tag que se reinicia vuelve a `sequence` bajo y sus
 paquetes se rechazan como replay hasta que el contador supere el último visto
 o pase `retention_s`. Una autenticación criptográfica (HMAC por tag) queda como
 mejora futura; ver `docs/location.md`.

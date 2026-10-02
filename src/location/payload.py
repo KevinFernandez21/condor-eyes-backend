@@ -1,4 +1,4 @@
-"""Contrato de mensajes entre nodos de zona ESP32-S3 y la localización.
+"""Contrato de mensajes entre nodos de zona (receptor BLE del PC o ESP32) y la localización.
 
 Hay dos codificaciones equivalentes de la misma observación (versión 1):
 
