@@ -352,6 +352,22 @@ def test_identity_unknown_no_face_and_invalid(tmp_path):
         assert_strict_json(dict(p))
 
 
+def test_identity_envelopes_pass_through_real_strict_hub(tmp_path):
+    import asyncio
+
+    from bus import InMemoryHub, Topic
+    from bus.hub import envelope_to_dict
+
+    h, _ = handler(tmp_path)
+    hub = InMemoryHub()
+    for crop in (frame(1), frame(2), frame(9), None):
+        env = h.identify(crop, stream_id="cam-1")  # type: ignore[arg-type]
+        asyncio.run(hub.publish(Topic.EVENTS, env))
+    assert len(hub.history) == 4
+    for topic, env in hub.history:
+        assert envelope_to_dict(topic, env)["payload"] == dict(env.payload)
+
+
 def test_identity_blocks_cloud_embedder_unless_allowed(tmp_path):
     emb = FakeEmbedder("gemini-embedding-2@8", cloud=True)
     idx = FaceIndex(tmp_path / "c.sqlite", emb.model_id, cloud=True)
