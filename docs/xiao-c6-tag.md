@@ -1,7 +1,8 @@
 # Tag BLE con XIAO ESP32-C6 y receptor del PC
 
-Estado: **firmware y receptor probados con hardware real; umbrales sin calibrar**.
-Issue #26 (relacionado con #16, localización por zonas).
+Estado: **firmware y receptor probados con hardware real, integrados con
+`LocationService`; umbrales sin calibrar**. Issue #26 (depende de #16, localización
+por zonas; ver `docs/location.md`).
 
 Con un solo radio no hay triangulación: lo medible es la **presencia dentro de un
 área** (RSSI cerca de un receptor fijo). Fuera de alcance: multi-nodo, LoRaWAN, rostros.
@@ -10,13 +11,19 @@ Con un solo radio no hay triangulación: lo medible es la **presencia dentro de 
 
 ```
 XIAO ESP32-C6 (tag, lo lleva la persona) ──BLE──▶ adaptador Bluetooth del PC (receptor fijo, junto a la cámara)
-                                                       │ src/tagbridge: filtra el tag enrolado
+                                                       │ src/tagbridge: filtra el tag enrolado, arma payload v1
                                                        ▼
-                              observación payload v1 + estado inside/outside (umbral + histéresis)
+                                 LocationService (src/location): valida, suaviza, estima zona y confianza
+                                                       ▼
+                                 PresenceView: dentro/fuera con umbral + histéresis
 ```
 
-El receptor del PC hace el papel del "nodo de zona" del contrato de #16 (`node = N0001`).
-Más adelante puede sustituirse por un segundo ESP32 sin cambiar el contrato.
+El receptor del PC hace el papel del nodo de zona del contrato de #16 (`node = N0001`,
+zona `lobby` en `configs/location.toml`). Más adelante puede sustituirse por un segundo
+ESP32 sin cambiar el contrato. El tag se enrola por la interfaz `PersonnelRepository`
+(`InMemoryPersonnelRepository` en el prototipo); los logs solo muestran seudónimos.
+Clave de seudonimización: variable `CONDOR_PSEUDONYM_KEY`; sin ella se usa una clave
+efímera.
 
 ## Anuncio del tag
 
@@ -32,41 +39,64 @@ Datos de fabricante, company ID `0xFFFF` (reservado para pruebas), 14 bytes litt
 
 El receptor filtra por este formato y por el ID enrolado, **no** por la dirección BLE
 (que puede cambiar). Cualquier otro dispositivo se descarta sin loguearlo; solo se
-cuenta en `stats["ignored"]`. Firmware y build: `firmware/xiao_c6_tag/README.md`.
+cuenta en `receiver.ignored`. Firmware y build: `firmware/xiao_c6_tag/README.md`.
+
+### `seq` monótono entre reinicios
+
+El anti-replay de #16 es por contador circular de 32 bits por (tag, nodo): un `seq`
+menor que el último visto es `replay` y uno 2^31 o más adelante también. Un `seq`
+aleatorio al arrancar hacía que cerca de la mitad de los reinicios dejaran al tag
+rechazado hasta `retention_s`. El firmware reserva bloques en NVS (`Preferences`,
+espacio `cetag`, clave `seqblk`):
+
+1. Al arrancar lee el inicio del bloque guardado (0 en el primer arranque), lo usa
+   como `seq` inicial y guarda `inicio + SEQ_BLOCK`.
+2. Cuando `seq` alcanza el final del bloque reservado, guarda el siguiente bloque.
+3. El valor guardado es siempre mayor que cualquier `seq` ya emitido, así que
+   tras cualquier reinicio (también por corte de energía) el `seq` sigue creciendo.
+
+`SEQ_BLOCK = 1000`: un reinicio salta como máximo 1000 (muy por debajo de 2^31) y hay
+una escritura en NVS cada 1000 anuncios (unos 100 s a 100 ms). Reflashear sin borrar
+NVS conserva el contador; borrar la flash lo reinicia a 0 (el servicio lo rechazaría
+como `replay` hasta `retention_s`).
+`tests/test_tag_seq_scheme.py` modela este esquema y prueba que `LocationService`
+acepta todos los paquetes de cientos de reinicios, y que el esquema anterior se rechazaba.
 
 ## Observación emitida (payload v1)
 
-Igual que en `docs/location.md` de #16 (en la rama `feat/tag-zone-localization`):
+Igual que en `docs/location.md`:
 
 ```json
-{"v":1,"ch":"ble","tag":"58E6C515220A","node":"N0001","rssi":-74,"ts":1790914468536,"seq":514207471}
+{"v":1,"ch":"ble","tag":"58E6C515220A","node":"N0001","rssi":-74,"ts":1790914468536,"seq":3007}
 ```
 
-`bat` se omite si el tag no la reporta. `ts` es la hora del PC en ms UTC. Los `seq`
-repetidos u hasta 8 por detrás del último se descartan (Windows reentrega anuncios);
-uno mucho más atrás se toma como reinicio del tag.
+`bat` se omite si el tag no la reporta. `ts` es la hora del PC en ms UTC. El receptor
+no filtra repetidos: Windows reentrega anuncios y `LocationService` los cuenta como
+`duplicate` en `service.stats`.
 
 ## Receptor en vivo
 
 ```bash
 uv run python scripts/tag_receiver.py --tag 58E6C515220A            # tabla en vivo
-uv run python scripts/tag_receiver.py --tag 58E6C515220A --jsonl    # observaciones v1
+uv run python scripts/tag_receiver.py --tag 58E6C515220A --jsonl    # observaciones v1 aceptadas
 uv run python scripts/tag_receiver.py --tag ... --duration 30 --enter-dbm -65 --hysteresis-db 6
 ```
 
-Salida: RSSI crudo, media móvil (`--window`, 5 por defecto), `inside`/`outside`,
-confianza `[0, 1]` y `seq`. Entra cuando la media es `>= enter_dbm`; sale cuando es
-`< enter_dbm - hysteresis_db`. Sin anuncios durante `--lost-after-s` pasa a `outside`
-con confianza 0 (`reason = lost`). La confianza es el margen al umbral de decisión
-entre 10 dB (heurística provisional). El ID del tag se pasa por argumento; no se
-versiona.
+Salida: RSSI crudo, media suavizada por `LocationService` (`smoothing` en
+`configs/location.toml`), zona, `inside`/`outside`, confianza `[0, 1]` de la
+estimación y `seq`. Los rechazos no se imprimen: salen por motivo en el resumen final.
+La vista dentro/fuera entra cuando el RSSI suavizado es `>= enter_dbm` y sale cuando es
+`< enter_dbm - hysteresis_db`; sin evidencia fresca pasa a `outside` con el motivo de
+`LocationService` (`stale_evidence`, `node_outage`). El ID del tag se pasa por
+argumento; no se versiona.
 
 ## Site map
 
 `configs/site_map.toml` une cada zona con su receptor (`[[receivers]]`), su cámara
 (`[[cameras]]`) y la región de la imagen `[x0, y0, x1, y1]` normalizada donde se la
-ve. La cámara `laptop-webcam` es un placeholder. `enter_dbm` y `hysteresis_db` de la
-zona son los valores por defecto del receptor; `calibrated = false` hasta medir.
+ve. La zona `lobby` y el nodo `N0001` coinciden con `configs/location.toml` (hay un
+test que lo comprueba). La cámara `laptop-webcam` es un placeholder. `enter_dbm` y
+`hysteresis_db` son los valores por defecto del receptor; `calibrated = false` hasta medir.
 
 ## Procedimiento de calibración en sitio
 
@@ -84,17 +114,17 @@ valores de otro lugar.
 7. Escribe en `configs/site_map.toml` los valores elegidos, pon `calibrated = true` y
    anota fecha, posiciones y estadísticas en un informe en `docs/reports/`.
 
-### Notas de la primera prueba (sin calibrar)
+### Notas de la prueba en vivo (sin calibrar)
 
-El receptor corrió contra el C6 conectado por USB al PC. El RSSI varió entre -74 y
--91 dBm, con huecos de varios segundos entre callbacks: el adaptador del PC entrega
-una fracción de los anuncios. Distancia y orientación no se midieron, así que no son
-datos de calibración.
+Receptor del PC contra el C6 conectado por USB, 45 s, sin mover nada: 20 observaciones
+aceptadas, 73 rechazadas como `duplicate` (reentregas del adaptador) y 30 anuncios de
+otros dispositivos ignorados. RSSI crudo entre -86 y -71 dBm; confianza entre 0.20 y
+0.65; zona `lobby`. Con el umbral provisional de -70 dBm todo quedó `outside`. Distancia
+y orientación no se midieron, así que no son datos de calibración.
 
 ## Pendiente
 
 - Calibrar con el procedimiento anterior.
-- Integrar el receptor con `LocationService` de `src/location` (#16) en lugar de la
-  lógica de umbral local de `tagbridge.presence`.
 - Medición de batería: el firmware anuncia `0xFF` hasta definir el pin ADC.
-- Sin autenticación del tag: igual que en #16, la mitigación es un HMAC por tag.
+- Repositorio de personal persistente y clave de seudonimización de despliegue (#16).
+- Sin autenticación del tag: la mitigación es un HMAC por tag (#16).

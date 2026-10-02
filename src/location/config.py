@@ -16,7 +16,7 @@ class ConfigError(ValueError):
 
 @dataclass(frozen=True, slots=True)
 class ZoneConfig:
-    """Zona física con sus nodos ESP32-S3 y zonas vecinas."""
+    """Zona física con sus nodos receptores y zonas vecinas."""
 
     zone_id: str
     nodes: tuple[str, ...]

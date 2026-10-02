@@ -2,7 +2,7 @@
 
 Modela RSSI con el modelo log-distancia: `rssi = tx - 10·n·log10(d) + ruido`.
 No reemplaza una campaña de medición real: los valores de `tx_power_dbm`,
-`path_loss_exp` y `noise_db` deben calibrarse con los ESP32-S3 instalados.
+`path_loss_exp` y `noise_db` deben calibrarse con el hardware instalado (tag XIAO ESP32-C6).
 """
 
 from __future__ import annotations
