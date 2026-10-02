@@ -196,7 +196,7 @@ const Agents = (() => {
 
   function render(s) {
     for (const fn of [renderHealth, renderComponents, renderGraph, renderAlerts, renderFeed, renderSite]) {
-      try { fn(s); } catch (err) { console.error(fn.name, err); }
+      UI.guard(fn.name, () => fn(s));
     }
   }
   function init(onChange) {

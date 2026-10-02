@@ -52,8 +52,9 @@ const App = (() => {
     tick(true);
   }
   function paint(s) {
-    const fns = [() => pills(s), () => toasts(s), () => (view === "agents" ? Agents.render(s) : Cams.render(s))];
-    for (const fn of fns) { try { fn(); } catch (err) { console.error(err); } }
+    UI.guard("pills", () => pills(s));
+    UI.guard("toasts", () => toasts(s));
+    UI.guard(view, () => (view === "agents" ? Agents.render(s) : Cams.render(s)));
   }
 
   async function tick() {
@@ -84,8 +85,8 @@ const App = (() => {
   }
 
   function init() {
-    Agents.init(() => tick());
-    Cams.init(() => {});
+    UI.guard("agents-init", () => Agents.init(() => tick()));
+    UI.guard("cams-init", () => Cams.init(() => {}));
     for (const b of document.querySelectorAll(".tab")) b.addEventListener("click", () => show(b.dataset.view, true));
     show(location.hash === "#multicamara" ? "cams" : "agents", false);
   }

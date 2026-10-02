@@ -60,5 +60,14 @@ const UI = (() => {
     for (let i = 0; i < text.length; i++) h = Math.imul(h ^ text.charCodeAt(i), 16777619);
     return h >>> 0;
   }
-  return { el, svg, dash, fmt, clock, hhmm, uptime, rng, hash, STATE_TEXT };
+  // Ejecuta un panel; si falla (p. ej. falta un id del HTML) lo registra UNA vez
+  // y sigue: un panel roto no debe tumbar a los demás ni inundar la consola.
+  const failed = new Set();
+  function guard(name, fn) {
+    try { return fn(); } catch (err) {
+      if (!failed.has(name)) { failed.add(name); console.error(`Panel «${name}» omitido:`, err); }
+      return undefined;
+    }
+  }
+  return { guard, el, svg, dash, fmt, clock, hhmm, uptime, rng, hash, STATE_TEXT };
 })();

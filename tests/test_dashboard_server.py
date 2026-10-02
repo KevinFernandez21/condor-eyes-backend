@@ -89,3 +89,42 @@ def test_lan_bind_requires_explicit_flag():
     with pytest.raises(DashboardConfigurationError, match="autenticación"):
         check_bind("0.0.0.0", allow_lan=False)
     check_bind("0.0.0.0", allow_lan=True)
+
+
+def test_index_is_never_cached_and_every_asset_is_versioned_by_content_hash():
+    response = _client().get("/")
+    assert response.headers["cache-control"] == "no-store"
+    refs = re.findall(r'(?:src|href)="(/static/[^"]+)"', response.text)
+    assert len(refs) >= 5
+    for ref in refs:
+        match = re.fullmatch(r"(/static/[\w.\-]+)\?v=([0-9a-f]{10})", ref)
+        assert match, f"recurso sin versión: {ref}"
+        from dashboard.server import STATIC_DIR, asset_version
+
+        assert match.group(2) == asset_version(STATIC_DIR / match.group(1).removeprefix("/static/"))
+
+
+def test_every_static_file_referenced_by_the_template_exists():
+    from dashboard.server import STATIC_DIR
+
+    html = (STATIC_DIR / "index.html").read_text(encoding="utf-8")
+    for name in re.findall(r'(?:src|href)="/static/([^"]+)"', html):
+        assert (STATIC_DIR / name).is_file()
+
+
+def test_version_changes_when_content_changes(tmp_path):
+    from dashboard.server import asset_version
+
+    f = tmp_path / "a.js"
+    f.write_text("1", encoding="utf-8")
+    first = asset_version(f)
+    f.write_text("2", encoding="utf-8")
+    assert asset_version(f) != first
+
+
+def test_static_files_must_revalidate_and_versioned_url_resolves():
+    client = _client()
+    response = client.get("/static/app.js?v=abc")
+    assert response.status_code == 200
+    assert response.headers["cache-control"] == "no-cache"
+    assert "etag" in response.headers

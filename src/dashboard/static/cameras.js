@@ -280,9 +280,9 @@ const Cams = (() => {
     st.last = s;
     if (!st.live && !st.frozen) st.frozen = s;
     const data = st.live ? s : st.frozen;
-    renderGrid(s, data);
-    renderTimeline(data);
-    renderReviews();
+    UI.guard("grid", () => renderGrid(s, data));
+    UI.guard("timeline", () => renderTimeline(data));
+    UI.guard("reviews", renderReviews);
   }
   function init(changeCb) {
     onChange = changeCb || (() => {});

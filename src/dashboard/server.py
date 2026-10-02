@@ -9,14 +9,16 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import hashlib
 import ipaddress
+import re
 import logging
 from collections.abc import AsyncIterator
 from pathlib import Path
 from typing import Any
 
 from fastapi import FastAPI, Query
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 from . import viewmodel as vm
@@ -26,6 +28,36 @@ from .state import DashboardState
 
 logger = logging.getLogger(__name__)
 STATIC_DIR = Path(__file__).parent / "static"
+
+
+_ASSET_REF = re.compile(r'((?:src|href)=")(/static/[A-Za-z0-9_.\-]+)(")')
+
+
+def asset_version(path: Path) -> str:
+    """Huella corta del contenido: cambia la URL cuando cambia el archivo."""
+    return hashlib.sha256(path.read_bytes()).hexdigest()[:10]
+
+
+def render_index() -> str:
+    """index.html con cada recurso estático referenciado como ``?v=<sha256[:10]>``."""
+    html = (STATIC_DIR / "index.html").read_text(encoding="utf-8")
+
+    def version(match: re.Match[str]) -> str:
+        name = match.group(2).removeprefix("/static/")
+        file = STATIC_DIR / name
+        tag = asset_version(file) if file.is_file() else "0"
+        return f"{match.group(1)}{match.group(2)}?v={tag}{match.group(3)}"
+
+    return _ASSET_REF.sub(version, html)
+
+
+class RevalidatedStaticFiles(StaticFiles):
+    """Estáticos que el navegador debe revalidar siempre (ETag), sin caché heurística."""
+
+    async def get_response(self, path: str, scope: Any) -> Any:
+        response = await super().get_response(path, scope)
+        response.headers["Cache-Control"] = "no-cache"
+        return response
 
 
 class DashboardConfigurationError(ValueError):
@@ -100,9 +132,9 @@ def create_app(
         return JSONResponse(body, headers={"Cache-Control": "no-store"})
 
     @app.get("/")
-    def index() -> FileResponse:
-        return FileResponse(STATIC_DIR / "index.html", headers={"Cache-Control": "no-store"})
+    def index() -> HTMLResponse:
+        return HTMLResponse(render_index(), headers={"Cache-Control": "no-store"})
 
-    app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
+    app.mount("/static", RevalidatedStaticFiles(directory=STATIC_DIR), name="static")
     app.state.dashboard = state
     return app
