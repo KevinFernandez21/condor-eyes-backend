@@ -105,6 +105,73 @@ def cmd_openimages(a: argparse.Namespace) -> None:
     print(f"data YAML: {root / 'firearm_v2.yaml'}")
 
 
+def _variant(spec: str) -> tuple[str, Any]:
+    """`nombre:tipo:modelo` con tipo `single` o `twostage`."""
+    from .detector import FirearmDetector
+    from .twostage import TwoStageConfig, TwoStageDetector
+
+    name, kind, model = spec.split(":", 2)
+    if kind == "single":
+        det: Any = FirearmDetector(
+            load_config("configs/firearm.toml", model=model, conf=0.05)
+        )
+    elif kind == "twostage":
+        det = TwoStageDetector(TwoStageConfig(weapon_model=model))
+    else:
+        raise ValueError(f"Tipo desconocido: {kind}")
+    return name, det
+
+
+def cmd_compare(a: argparse.Namespace) -> None:
+    from .evaluate import (
+        calibrate,
+        dump,
+        load_split,
+        metrics,
+        negatives_rate,
+        predict,
+        video_frames,
+    )
+
+    sim, oi = Path(a.simuletic), Path(a.openimages)
+    val = load_split(sim, "val") + load_split(oi, "val")
+    tests = {
+        "simuletic_scene6": load_split(sim, "test"),
+        "openimages_test": load_split(oi, "test"),
+    }
+    negatives = load_split(oi, "negatives")
+    report: dict[str, Any] = {}
+    for spec in a.variants:
+        name, det = _variant(spec)
+        vp = predict(det.infer, val)
+        thr = calibrate(vp, [g for _, g in val])
+        r: dict[str, Any] = {
+            "spec": spec,
+            "threshold_val": thr,
+            "val": metrics(vp, [g for _, g in val], thr),
+        }
+        for tname, items in tests.items():
+            r[tname] = metrics(predict(det.infer, items), [g for _, g in items], thr)
+        r["negatives"] = negatives_rate(predict(det.infer, negatives), thr)
+        hits = video_frames(det.infer, a.video, thr)
+        r["video"] = {
+            "weapon_frames": len(hits),
+            "before_39": sum(i < 39 for i in hits),
+            "first": hits[0] if hits else None,
+            "visible_hits": sum(i >= 39 for i in hits),
+        }
+        report[name] = r
+        det.close()
+        print(
+            f"{name:>18} thr={thr:.3f} | Scene6 AP50={r['simuletic_scene6']['ap50']:.3f} "
+            f"P/R={r['simuletic_scene6']['precision']:.2f}/{r['simuletic_scene6']['recall']:.2f} | "
+            f"OI AP50={r['openimages_test']['ap50']:.3f} P/R={r['openimages_test']['precision']:.2f}/"
+            f"{r['openimages_test']['recall']:.2f} | neg={r['negatives']['rate']:.3f} | "
+            f"video={r['video']['visible_hits']}/106 (falsas {r['video']['before_39']})"
+        )
+    dump(a.output, report)
+
+
 def cmd_train(a: argparse.Namespace) -> None:
     from ultralytics import YOLO
 
@@ -122,6 +189,7 @@ def cmd_train(a: argparse.Namespace) -> None:
         exist_ok=True,
         seed=0,
         deterministic=True,
+        scale=a.scale,
     )
     print(f"Pesos: {Path(a.project) / a.name / 'weights' / 'best.pt'}")
 
@@ -257,6 +325,22 @@ def build_parser() -> argparse.ArgumentParser:
     s.set_defaults(func=cmd_split)
 
     s = sub.add_parser(
+        "compare",
+        help="Compara variantes (una etapa / dos etapas) con el mismo evaluador",
+    )
+    s.add_argument(
+        "--variants",
+        nargs="+",
+        required=True,
+        help="nombre:single|twostage:ruta_modelo",
+    )
+    s.add_argument("--simuletic", default="datasets/simuletic_cctv_weapon")
+    s.add_argument("--openimages", default="datasets/openimages_firearm")
+    s.add_argument("--video", default="data/raw/cctv-weapon/evaluation.mp4")
+    s.add_argument("--output", default="reports/firearm_cmp/compare.json")
+    s.set_defaults(func=cmd_compare)
+
+    s = sub.add_parser(
         "openimages",
         help="Arma el dataset Open Images V7 (armas + negativos difíciles)",
     )
@@ -291,6 +375,12 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--device", default="0")
     s.add_argument("--workers", type=int, default=4)
     s.add_argument("--patience", type=int, default=50)
+    s.add_argument(
+        "--scale",
+        type=float,
+        default=0.5,
+        help="Rango de escala del aumento (0,9 = objetos más pequeños)",
+    )
     s.add_argument("--project", default="runs/firearm")
     s.add_argument("--name", default="yolov8n_simuletic")
     s.set_defaults(func=cmd_train)

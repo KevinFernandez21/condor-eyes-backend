@@ -104,6 +104,20 @@ en S3, las reduce a 960 px y escribe `datasets/firearm_v2.yaml`: train y val de
 Simuletic **y** de Open Images. El test de Simuletic (Scene6) sigue siendo un held-out
 que ninguno de los dos modelos vio.
 
+### Aumentos de dominio y modelo v3
+
+```bash
+uv run python -c "import sys; sys.path.insert(0,'src'); from firearm.augment import make_degraded, make_composites; make_degraded('datasets/openimages_firearm','train','datasets/firearm_v3_aug',0.5); make_degraded('datasets/simuletic_cctv_weapon','train','datasets/firearm_v3_aug',1.0,seed=1); make_composites('datasets/openimages_firearm',[('datasets/surveillance','train_mot'),('datasets/simuletic_cctv_weapon','train')],'datasets/firearm_v3_aug',n=2000)"
+uv run python scripts/firearm.py train --data datasets/firearm_v3.yaml --base weights/yolov8n.pt --epochs 60 --batch 16 --workers 2 --patience 20 --scale 0.9 --name yolov8n_firearm_v3
+uv run python scripts/firearm.py compare --variants "v3:single:runs/firearm/yolov8n_firearm_v3/weights/best.pt" "v3-dos-etapas:twostage:runs/firearm/yolov8n_firearm_v3/weights/best.pt"
+```
+
+- Los fondos del *copy-paste* son los frames de MOT16 de train que prepara el issue #9
+  (`datasets/surveillance/images/train_mot`, CC BY-NC-SA 3.0) y las escenas de train
+  de Simuletic. Ninguno es un split de test.
+- `datasets/firearm_v3.yaml` = Simuletic train + Open Images train + aumentos;
+  validación igual que v2.
+
 ### CCTV-Gun (bloqueado)
 
 [CCTV-Gun](https://github.com/srikarym/CCTV-Gun) era el dataset recomendado por el

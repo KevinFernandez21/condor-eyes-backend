@@ -114,6 +114,58 @@ postproceso). El modelo en sí tarda menos de 1 ms por imagen en esta GPU.
 - 19 de los 500 negativos todavía generan alarma.
 - El demo de 30 s con metraje real sigue pendiente.
 
+## v3: aumentos de dominio + detección en dos etapas (2026-10-01)
+
+Tres mejoras sin datos nuevos, comparadas con el **mismo evaluador**
+(`scripts/firearm.py compare`, `src/firearm/evaluate.py`). El umbral se calibra en
+validación por F1 máximo, nunca en test.
+
+1. **Aumentos de dominio** (`src/firearm/augment.py`, modelo v3):
+   - 1954 copias degradadas estilo CCTV: baja resolución, JPEG de calidad 15–50,
+     desenfoque, poca luz con ruido y gris;
+   - 1999 composiciones *copy-paste*: personas armadas de Open Images reducidas a
+     50–220 px y pegadas con borde difuminado sobre frames reales de MOT16 (train) y
+     escenas de train de Simuletic;
+   - rango de escala `scale=0.9`;
+   - 60 épocas, 39 min.
+2. **Dos etapas** (`src/firearm/twostage.py`): personas con YOLOv8n COCO a 1280 y
+   detector de armas sobre cada persona recortada y ampliada a 384 px. Se fusiona con
+   la pasada sobre el frame completo por NMS.
+3. **Umbral calibrado** en validación en vez del 0,35 fijo.
+
+| Variante | Umbral (val) | Scene6 CCTV AP50 | Scene6 P / R | Open Images AP50 | OI P / R | Negativos con falsa alarma | Video: frames con el rifle |
+|---|---|---|---|---|---|---|---|
+| v2 | 0,475 | 0,617 | 0,67 / 0,13 | **0,608** | 0,93 / 0,53 | **2,0 %** | **51** |
+| v2, dos etapas | 0,55 | 0,723 | 0,86 / 0,40 | 0,578 | 0,82 / 0,54 | 2,4 % | 44 |
+| **v3** | 0,475 | **0,926** | **1,00 / 0,67** | 0,605 | 0,92 / 0,50 | 3,0 % | 44, desde el frame 37 |
+| v3, dos etapas | 0,525 | 0,773 | 0,69 / 0,60 | 0,572 | 0,82 / 0,50 | 3,0 % | 39 |
+
+- El conteo del video es sobre frames con el rifle visible.
+- El frame 37–38, que en un principio parecía una falsa alarma, ya muestra el rifle
+  en la mano. v3 lo detecta antes que v2.
+
+Con el umbral anterior de 0,35, v3 da en Scene6 precisión / recall 1,00 / **0,87**,
+en Open Images 0,91 / 0,55, un 5,8 % de falsas alarmas en negativos y 64 frames con
+el rifle en el video.
+
+**Lectura:**
+
+- Los aumentos de dominio son la mejora clave para CCTV lejano. En Scene6 el AP50 pasa
+  de 0,617 a 0,926 y el recall al umbral de 0,13 a 0,67. En validación solo-CCTV
+  (Scene5, 13 armas) el AP50 sube de 0,32 a 0,67. En fotos de Open Images no cambia.
+- El coste es algo más de falsas alarmas en negativos (2,0 % a 3,0 %) y algo menos de
+  recall por frame en el video a igual umbral.
+- Las **dos etapas** ayudan a un modelo que no ve armas pequeñas (v2), pero con v3
+  empeoran: añaden detecciones dudosas en los recortes y hacen una inferencia extra
+  por persona. Quedan disponibles (`TwoStageDetector`) pero **no** son la opción por
+  defecto.
+- Scene6 es sintética. Los fondos del *copy-paste* son de train y ninguno es Scene6,
+  pero el estilo sintético se parece. La confirmación definitiva requiere CCTV real.
+
+**Decisión:** el modelo por defecto pasa a **v3 en una etapa**, con `conf=0.475`
+calibrado. Si en el sitio se prefiere recall a falsas alarmas, `conf=0.35`. El umbral
+debe recalibrarse con video real del sitio.
+
 ## Conclusiones y siguientes pasos
 
 1. El flujo completo funciona en la laptop: datos → entrenamiento → evaluación → video anotado con métricas.
