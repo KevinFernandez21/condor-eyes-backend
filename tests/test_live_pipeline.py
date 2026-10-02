@@ -8,6 +8,7 @@ from __future__ import annotations
 import threading
 import time
 from collections.abc import Callable
+from typing import ClassVar
 
 import numpy as np
 import pytest
@@ -258,7 +259,7 @@ def test_disconnection_does_not_grow_buffers(pipeline, factory):
     assert wait_until(lambda: state_of(pipeline, "cam-a") is StreamState.CONNECTED)
     camera.disconnect()
     assert wait_until(lambda: state_of(pipeline, "cam-a") is StreamState.RECONNECTING)
-    time.sleep(0.1)
+    assert wait_until(lambda: pipeline.stream_health("cam-a").total_reconnects >= 3)
     assert pipeline.stream_health("cam-a").queue_depth <= 4
 
 
@@ -410,3 +411,72 @@ def test_status_callback_reports_state_transitions(factory):
     assert StreamState.CONNECTING in states
     assert StreamState.CONNECTED in states
     assert states[-1] is StreamState.STOPPED
+
+
+class HangingSource:
+    """Fuente cuyo read() se queda colgado hasta que se la cierra."""
+
+    instances: ClassVar[list[HangingSource]] = []
+
+    def __init__(self) -> None:
+        self.closed = threading.Event()
+        HangingSource.instances.append(self)
+
+    def open(self) -> None:
+        pass
+
+    def read(self):
+        self.closed.wait(timeout=5)
+        raise ConnectionError("cerrada")
+
+    def close(self) -> None:
+        self.closed.set()
+
+
+def test_watchdog_closes_the_hung_source_to_release_the_device():
+    HangingSource.instances = []
+    pipeline = LiveVideoPipeline(
+        lambda source: HangingSource(),
+        config=fast_config(watchdog_timeout=0.1),
+    )
+    pipeline.add_source(src("cam-a"))
+    pipeline.start()
+    try:
+        assert wait_until(lambda: pipeline.stream_health("cam-a").total_reconnects >= 1)
+        assert wait_until(lambda: HangingSource.instances[0].closed.is_set(), 1.0)
+    finally:
+        pipeline.stop()
+
+
+def test_start_after_timed_out_stop_is_refused_until_threads_exit(factory):
+    gate = threading.Event()
+    entered = threading.Event()
+
+    def blocked_consumer(meta: FrameMetadata) -> None:
+        entered.set()
+        gate.wait(timeout=5)
+
+    pipeline = LiveVideoPipeline(
+        factory,
+        config=fast_config(join_timeout=0.1),
+        on_metadata=blocked_consumer,
+    )
+    pipeline.add_source(src("cam-a"))
+    pipeline.start()
+    assert entered.wait(timeout=2)
+    pipeline.stop()  # el despachador sigue atascado: el join expira
+
+    with pytest.raises(RuntimeError, match="sigue activo"):
+        pipeline.start()
+
+    gate.set()
+    assert wait_until(lambda: _try_start(pipeline))
+    pipeline.stop()
+
+
+def _try_start(pipeline: LiveVideoPipeline) -> bool:
+    try:
+        pipeline.start()
+    except RuntimeError:
+        return False
+    return True

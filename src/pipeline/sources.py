@@ -66,7 +66,7 @@ class OpenCVFrameSource:
         capture = cv2.VideoCapture(self._target(self._source))
         if not capture.isOpened():
             capture.release()
-            raise SourceError(f"No se pudo abrir la fuente {self._source.uri!r}")
+            raise SourceError(f"No se pudo abrir la fuente {self._source.safe_uri!r}")
         self._capture = capture
 
     def read(self) -> Frame:
@@ -74,7 +74,9 @@ class OpenCVFrameSource:
             raise SourceError("La fuente no está abierta")
         ok, image = self._capture.read()
         if not ok or image is None:
-            raise SourceError(f"Sin frames de {self._source.uri!r} (stream cortado)")
+            raise SourceError(
+                f"Sin frames de {self._source.safe_uri!r} (stream cortado)"
+            )
         height, width = image.shape[:2]
         return Frame(width=width, height=height, data=image)
 

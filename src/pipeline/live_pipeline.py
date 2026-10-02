@@ -22,8 +22,10 @@ from typing import Any
 from .buffer import DropOldestQueue
 from .health import BackoffPolicy, StreamHealth, StreamState
 from .metadata import FrameMetadata
+from .publisher import MetadataPublisher
 from .shared_pipeline import StreamSource
 from .sources import Frame, SourceFactory, opencv_source_factory
+from .uri import redact_credentials
 
 logger = logging.getLogger(__name__)
 
@@ -72,10 +74,22 @@ class _Stream:
     next_index: int = 0
     cancel: threading.Event = field(default_factory=threading.Event)
     worker: threading.Thread | None = None
+    active_source: Any = None  # fuente en uso; el watchdog la cierra si se cuelga
+
+
+def _log_failure(message: str, exc: BaseException) -> None:
+    """Registra el fallo sin traceback y sin credenciales en el texto."""
+    logger.error("%s: %s", message, redact_credentials(f"{type(exc).__name__}: {exc}"))
 
 
 class LiveVideoPipeline:
-    """Implementa `SharedVideoPipeline` con hilos y fuentes inyectables."""
+    """Implementa `SharedVideoPipeline` con hilos y fuentes inyectables.
+
+    Hay un único hilo despachador compartido: un consumidor lento (`on_metadata`,
+    `processor` o publisher) retrasa la entrega de TODOS los streams. La memoria
+    sigue acotada porque cada stream descarta su frame más viejo
+    (`max_buffered_frames`) y los lectores nunca se bloquean.
+    """
 
     def __init__(
         self,
@@ -85,12 +99,14 @@ class LiveVideoPipeline:
         on_metadata: MetadataCallback | None = None,
         on_status: StatusCallback | None = None,
         processor: Processor | None = None,
+        publisher: MetadataPublisher | None = None,
     ) -> None:
         self._factory = source_factory
         self._config = config or PipelineConfig()
         self._on_metadata = on_metadata
         self._on_status = on_status
         self._processor = processor
+        self._publisher = publisher
         self._lock = threading.RLock()
         self._streams: dict[str, _Stream] = {}
         self._running = False
@@ -127,6 +143,20 @@ class LiveVideoPipeline:
         self._notify(self._snapshot_of(stream, StreamState.STOPPED))
 
     def start(self) -> None:
+        with self._lock:
+            if self._running:
+                return
+            previous = [self._dispatcher, self._watchdog]
+        # Tras un stop() cuyo join expiró, los hilos viejos podrían seguir vivos;
+        # se les da un último plazo (fuera del lock, el despachador lo toma).
+        deadline = time.monotonic() + self._config.join_timeout
+        for thread in previous:
+            self._join(thread, deadline)
+            if thread is not None and thread.is_alive():
+                raise RuntimeError(
+                    f"El hilo {thread.name!r} del stop() anterior sigue activo; "
+                    "reintente start() cuando termine"
+                )
         with self._lock:
             if self._running:
                 return
@@ -208,12 +238,13 @@ class LiveVideoPipeline:
         )
 
     def _notify(self, health: StreamHealth) -> None:
-        if self._on_status is None:
-            return
         try:
-            self._on_status(health)
-        except Exception:
-            logger.exception("Fallo en on_status de %s", health.stream_id)
+            if self._publisher is not None:
+                self._publisher.publish_status(health)
+            if self._on_status is not None:
+                self._on_status(health)
+        except Exception as exc:  # noqa: BLE001 - un callback no debe tumbar el hilo
+            _log_failure(f"Fallo al notificar el estado de {health.stream_id}", exc)
 
     def _set_state(
         self, stream: _Stream, cancel: threading.Event, state: StreamState
@@ -261,6 +292,7 @@ class LiveVideoPipeline:
             try:
                 source = self._factory(stream.source)
                 with self._lock:
+                    stream.active_source = source
                     stream.last_progress = time.monotonic()
                     stream.watching = True
                 source.open()
@@ -273,8 +305,15 @@ class LiveVideoPipeline:
                     self._on_frame(stream, cancel, frame)
             except Exception as exc:  # noqa: BLE001 - cualquier fallo de fuente reconecta
                 if not cancel.is_set():
-                    self._record_error(stream, cancel, f"{type(exc).__name__}: {exc}")
+                    self._record_error(
+                        stream,
+                        cancel,
+                        redact_credentials(f"{type(exc).__name__}: {exc}"),
+                    )
             finally:
+                with self._lock:
+                    if stream.active_source is source:
+                        stream.active_source = None
                 self._safe_close(source)
             if cancel.is_set():
                 return
@@ -309,8 +348,8 @@ class LiveVideoPipeline:
             return
         try:
             source.close()
-        except Exception:
-            logger.exception("Error al cerrar la fuente")
+        except Exception as exc:  # noqa: BLE001 - un callback no debe tumbar el hilo
+            _log_failure("Error al cerrar la fuente", exc)
 
     def _record_error(
         self, stream: _Stream, cancel: threading.Event, message: str
@@ -374,10 +413,12 @@ class LiveVideoPipeline:
                 height=frame.height,
                 detections=tuple(detections),
             )
+            if self._publisher is not None:
+                self._publisher.publish_metadata(meta)
             if self._on_metadata is not None:
                 self._on_metadata(meta)
-        except Exception:
-            logger.exception("Fallo al procesar/entregar un frame de %s", stream_id)
+        except Exception as exc:  # noqa: BLE001 - un callback no debe tumbar el hilo
+            _log_failure(f"Fallo al procesar/entregar un frame de {stream_id}", exc)
             with self._lock:
                 stream.callback_errors += 1
 
@@ -389,6 +430,7 @@ class LiveVideoPipeline:
 
     def _check_stalls(self) -> None:
         notifications: list[StreamHealth] = []
+        hung: list[Any] = []
         with self._lock:
             if not self._running:
                 return
@@ -400,6 +442,9 @@ class LiveVideoPipeline:
                 if silent <= self._config.watchdog_timeout:
                     continue
                 stream.watching = False
+                if stream.active_source is not None:
+                    hung.append(stream.active_source)
+                    stream.active_source = None
                 stream.cancel.set()  # el worker colgado queda huérfano y se retira solo
                 stream.last_error = f"watchdog: sin frames durante {silent:.1f}s"
                 stream.retry_count += 1
@@ -415,5 +460,11 @@ class LiveVideoPipeline:
                     self._launch(stream, initial_delay=delay)
                     stream.state = StreamState.RECONNECTING
                 notifications.append(self._snapshot(stream))
+        for source in hung:
+            # Cierre en un hilo aparte: close() también podría colgarse y no debe
+            # bloquear al watchdog. Libera el dispositivo de la cámara colgada.
+            threading.Thread(
+                target=self._safe_close, args=(source,), name="video-close", daemon=True
+            ).start()
         for snapshot in notifications:
             self._notify(snapshot)

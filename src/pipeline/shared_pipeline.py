@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import StrEnum
 from typing import Protocol
+
+from .uri import sanitize_uri
 
 
 class SourceKind(StrEnum):
@@ -25,7 +27,7 @@ def _classify_uri(uri: str) -> SourceKind:
     for scheme in _RTSP_SCHEMES:
         if value.startswith(scheme):
             if len(value) == len(scheme):
-                raise ValueError(f"URI RTSP sin host: {uri!r}")
+                raise ValueError(f"URI RTSP sin host: {sanitize_uri(uri)!r}")
             return SourceKind.RTSP
     if value.startswith("/dev/video") and value[len("/dev/video") :].isdigit():
         return SourceKind.USB
@@ -37,10 +39,10 @@ def _classify_uri(uri: str) -> SourceKind:
             ):
                 return SourceKind.USB
             raise ValueError(
-                f"URI USB inválida (se espera índice o /dev/videoN): {uri!r}"
+                f"URI USB inválida (se espera índice o /dev/videoN): {sanitize_uri(uri)!r}"
             )
     raise ValueError(
-        f"URI no soportada: {uri!r}. Use rtsp://, rtsps://, usb:N o /dev/videoN"
+        f"URI no soportada: {sanitize_uri(uri)!r}. Use rtsp://, rtsps://, usb:N o /dev/videoN"
     )
 
 
@@ -49,12 +51,17 @@ class StreamSource:
     """Configuración mínima de una fuente RTSP o USB."""
 
     stream_id: str
-    uri: str
+    uri: str = field(repr=False)  # puede contener credenciales: no se imprime
 
     def __post_init__(self) -> None:
         if not self.stream_id.strip():
             raise ValueError("El stream_id no puede estar vacío")
         _classify_uri(self.uri)
+
+    @property
+    def safe_uri(self) -> str:
+        """URI sin credenciales, apta para logs, errores y salud."""
+        return sanitize_uri(self.uri)
 
     @property
     def kind(self) -> SourceKind:
