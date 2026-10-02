@@ -18,6 +18,7 @@ con ``clock_anomaly``.
 
 from __future__ import annotations
 
+import builtins
 import threading
 from collections import OrderedDict
 from datetime import datetime
@@ -179,8 +180,8 @@ class TraceStore:
                     self._ancestors(parent, acc, depth + 1)
 
     @staticmethod
-    def _parents(hop: _Hop, combined: dict[str, _Hop]) -> list[str]:
-        parents: list[str] = []
+    def _parents(hop: _Hop, combined: dict[str, _Hop]) -> builtins.list[str]:
+        parents: builtins.list[str] = []
         if hop.causation_id and hop.causation_id in combined:
             parents.append(hop.causation_id)
         if hop.decision is not None:
@@ -192,8 +193,8 @@ class TraceStore:
 
     @staticmethod
     def _causal_order(
-        combined: dict[str, _Hop], parents_of: dict[str, list[str]]
-    ) -> list[_Hop]:
+        combined: dict[str, _Hop], parents_of: dict[str, builtins.list[str]]
+    ) -> builtins.list[_Hop]:
         """Orden por tiempo, pero sin poner nunca a un hijo antes que su padre.
 
         Con marcas iguales (reloj grueso) o llegadas desordenadas, el simple
@@ -201,7 +202,7 @@ class TraceStore:
         """
         pending = sorted(combined.values(), key=lambda h: (h.ts, h.seq))
         placed: set[str] = set()
-        out: list[_Hop] = []
+        out: builtins.list[_Hop] = []
         while pending:
             pick = next(
                 (h for h in pending if all(p in placed for p in parents_of[h.event_id])),
@@ -220,7 +221,7 @@ class TraceStore:
         ordered = self._causal_order(combined, parents_of)
         start = ordered[0].ts if ordered else None
 
-        hops: list[dict[str, Any]] = []
+        hops: builtins.list[dict[str, Any]] = []
         anomaly = False
         for hop in ordered:
             parents = parents_of[hop.event_id]
