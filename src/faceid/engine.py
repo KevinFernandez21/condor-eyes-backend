@@ -79,7 +79,7 @@ class FaceEngine:
             m = torchvision.models.mobilenet_v3_small(weights="IMAGENET1K_V1")
             m.classifier = torch.nn.Identity()
             self._cnn = m.eval()
-        else:
+        elif embedder != "detector_only":  # solo detecta; otro Embedder calcula el vector
             raise ValueError(f"Embedder desconocido: {embedder}")
 
     def _prepare(self, img: np.ndarray) -> tuple[np.ndarray, float]:
@@ -115,6 +115,8 @@ class FaceEngine:
 
     def embed(self, img: np.ndarray, face: Face) -> np.ndarray:
         """`img` debe ser la imagen devuelta por `detect` (misma escala que `face`)."""
+        if self._sface is None and self._cnn is None:
+            raise RuntimeError("FaceEngine('detector_only') no calcula embeddings")
         if self._sface is not None:
             crop = self._sface.alignCrop(img, face.raw)
             v = self._sface.feature(crop).flatten().astype("float32")
