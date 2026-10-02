@@ -32,6 +32,8 @@ En la Orin, JetPack 6 trae Python 3.10 y sus bindings de TensorRT/DeepStream est
 
 Presupuesto edge (issue #23): `docs/edge-budget.md` y `uv run python scripts/edge_budget.py {export,matrix}` miden memoria y FPS en la laptop **sin CUDA** (OpenVINO FP16 en CPU/iGPU, detector lean de `src/edge/ovdetect.py` sin torch) como proxy de la Jetson. Decisiones ARCH-006 a ARCH-009 en `docs/architecture.md`: un solo detector de 10 clases como objetivo (hoy dos engines como excepción temporal), FP16 en todo, entrada 640 en multistream.
 
+Detectores por el runtime (issue #39): `src/pipeline/detection.py` (`DetectorProcessor`) conecta cualquier `Detector` como `processor` de `LiveVideoPipeline` (una instancia por modelo para todos los streams, salida JSON estricta, `warmup` antes de abrir cámaras). `uv run python scripts/runtime_detectors.py all --video <mp4>` compara standalone frente a pipeline → bus → agentes; resultados y revisión en `docs/runtime-detectors.md`.
+
 La documentación y los mensajes de error están en español; mantén ese idioma.
 
 ## Harness de comparación (`src/compare/`)
