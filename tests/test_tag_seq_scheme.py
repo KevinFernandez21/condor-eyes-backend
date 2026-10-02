@@ -129,7 +129,7 @@ def test_model_constants_match_firmware_source():
 
 def test_boot_line_reports_seq_start_with_matching_args():
     src = INO.read_text(encoding="utf-8")
-    call = re.search(r'Serial\.printf\("BOOT(.*?)\\n",(.*?)\);', src, re.S)
+    call = re.search(r'Serial\.printf\("BOOT(.*?)\\n",(.*?)\);', src, re.DOTALL)
     assert call is not None
     fmt, args = call.group(1), call.group(2)
     assert "seq_start=%lu" in fmt
