@@ -52,6 +52,17 @@ static uint8_t tagId[6];
 static uint32_t seq;
 static uint32_t seqBlockEnd;
 static Preferences prefs;
+static bool nvsOk = false;
+static bool nvsWarned = false;
+
+// Guarda el final del bloque reservado; avisa una sola vez por serie si falla.
+static void saveSeqBlock() {
+  if (!nvsOk) return;
+  if (prefs.putUInt("seqblk", seqBlockEnd) == 0 && !nvsWarned) {
+    nvsWarned = true;
+    Serial.println("WARN nvs_write_failed: seq no persistente, reiniciar puede causar replay");
+  }
+}
 static BLEAdvertising *advertising;
 
 static bool parseTagOverride(const char *hex, uint8_t *out) {
@@ -105,10 +116,15 @@ void setup() {
   if (!(strlen(TAG_ID_OVERRIDE) && parseTagOverride(TAG_ID_OVERRIDE, tagId))) {
     esp_read_mac(tagId, ESP_MAC_BT);
   }
-  prefs.begin("cetag", false);
-  seq = prefs.getUInt("seqblk", 0);
+  // Si NVS falla el tag sigue anunciando, pero el seq deja de ser persistente: un
+  // reinicio puede volver a un seq bajo y LocationService lo rechazaría como replay.
+  nvsOk = prefs.begin("cetag", false);
+  if (!nvsOk) {
+    Serial.println("WARN nvs_begin_failed: seq no persistente, reiniciar puede causar replay");
+  }
+  seq = nvsOk ? prefs.getUInt("seqblk", 0) : 0;
   seqBlockEnd = seq + SEQ_BLOCK;
-  prefs.putUInt("seqblk", seqBlockEnd);
+  saveSeqBlock();
 
   char name[16];
   snprintf(name, sizeof(name), "CE-TAG-%02X%02X", tagId[4], tagId[5]);
@@ -122,7 +138,7 @@ void setup() {
   advertising->setMaxInterval(units);
   advertising->setScanResponse(false);  // el anuncio ya lleva todo; sin respuesta de escaneo
 
-  Serial.printf("BOOT fw=%s tag=%02X%02X%02X%02X%02X%02X name=%s interval_ms=%d\n", FW_VERSION,
+  Serial.printf("BOOT fw=%s tag=%02X%02X%02X%02X%02X%02X name=%s interval_ms=%d seq_start=%lu\n", FW_VERSION,
                 tagId[0], tagId[1], tagId[2], tagId[3], tagId[4], tagId[5], name,
                 ADV_INTERVAL_MS, (unsigned long)seq);
 }
@@ -130,7 +146,7 @@ void setup() {
 void loop() {
   if (seq - (seqBlockEnd - SEQ_BLOCK) >= SEQ_BLOCK) {  // aritmética módulo 2^32
     seqBlockEnd += SEQ_BLOCK;
-    prefs.putUInt("seqblk", seqBlockEnd);
+    saveSeqBlock();
   }
   uint8_t battery = readBatteryPct();
   publishAdvertisement(battery);

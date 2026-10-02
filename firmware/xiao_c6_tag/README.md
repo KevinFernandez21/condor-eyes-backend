@@ -42,8 +42,8 @@ Se cambia con `--build-property "build.extra_flags=-DNOMBRE=valor"` en `compile`
 Una línea por anuncio; al abrir el puerto la placa se reinicia y emite `BOOT`:
 
 ```
-BOOT fw=1.0.0 tag=58E6C515220A name=CE-TAG-220A interval_ms=100 seq_start=2000
-ADV tag=58E6C515220A seq=2000 bat=255
+BOOT fw=1.0.0 tag=58E6C515220A name=CE-TAG-220A interval_ms=100 seq_start=5000
+ADV tag=58E6C515220A seq=5000 bat=255
 ```
 
 `bat=255` es batería desconocida.
@@ -54,3 +54,7 @@ El `seq` se guarda por bloques en NVS (`Preferences`, espacio `cetag`, clave `se
 y sigue creciendo tras cada reinicio (salta como máximo `SEQ_BLOCK`). Así el
 anti-replay de `LocationService` no rechaza al tag. Detalle en `docs/xiao-c6-tag.md`.
 Para reiniciar el contador a 0 hay que borrar la flash (`esptool erase_flash`).
+
+Si NVS falla (`prefs.begin` o `putUInt`), el firmware sigue anunciando pero imprime una
+sola vez `WARN nvs_begin_failed` o `WARN nvs_write_failed`. Sin NVS el `seq` empieza
+en 0 en cada arranque y `LocationService` puede rechazar al tag como `replay`.

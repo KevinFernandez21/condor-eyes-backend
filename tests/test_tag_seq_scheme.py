@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 import random
+import re
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -24,6 +25,10 @@ from location import (
 
 TAG = "58E6C515220A"
 BLOCK = 1000
+NVS_KEY = "seqblk"
+INO = (
+    Path(__file__).resolve().parents[1] / "firmware" / "xiao_c6_tag" / "xiao_c6_tag.ino"
+)
 T0 = 1767268800.0
 LOCATION_CFG = Path(__file__).resolve().parents[1] / "configs" / "location.toml"
 
@@ -32,14 +37,14 @@ class TagSeqModel:
     def __init__(self, nvs: dict[str, int], block: int = BLOCK) -> None:
         self.nvs = nvs
         self.block = block
-        self.seq = nvs.get("seqblk", 0)
+        self.seq = nvs.get(NVS_KEY, 0)
         self.block_end = self.seq + block
-        nvs["seqblk"] = self.block_end
+        nvs[NVS_KEY] = self.block_end
 
     def next(self) -> int:
         if self.seq >= self.block_end:
             self.block_end += self.block
-            self.nvs["seqblk"] = self.block_end
+            self.nvs[NVS_KEY] = self.block_end
         value = self.seq
         self.seq = (self.seq + 1) & 0xFFFFFFFF
         return value
@@ -102,7 +107,7 @@ def test_saved_block_is_always_ahead_of_emitted_seq():
     tag = TagSeqModel(nvs)
     for _ in range(5000):
         s = tag.next()
-        assert nvs["seqblk"] > s
+        assert nvs[NVS_KEY] > s
 
 
 def test_old_random_start_scheme_is_rejected_after_reboot():
@@ -112,3 +117,22 @@ def test_old_random_start_scheme_is_rejected_after_reboot():
         assert h.send(s)
     assert h.send(100) is False
     assert h.svc.stats[RejectReason.REPLAY] == 1
+
+
+def test_model_constants_match_firmware_source():
+    src = INO.read_text(encoding="utf-8")
+    block = re.search(r"#define\s+SEQ_BLOCK\s+(\d+)", src)
+    assert block is not None and int(block.group(1)) == BLOCK
+    assert f'"{NVS_KEY}"' in src  # misma clave NVS que el modelo
+    assert 'prefs.getUInt("seqblk", 0)' in src  # primer arranque desde 0
+
+
+def test_boot_line_reports_seq_start_with_matching_args():
+    src = INO.read_text(encoding="utf-8")
+    call = re.search(r'Serial\.printf\("BOOT(.*?)\\n",(.*?)\);', src, re.S)
+    assert call is not None
+    fmt, args = call.group(1), call.group(2)
+    assert "seq_start=%lu" in fmt
+    assert len(re.findall(r"%[0-9]*\w+", fmt.replace("%%", ""))) == len(
+        [a for a in re.split(r",(?![^()]*\))", args) if a.strip()]
+    )

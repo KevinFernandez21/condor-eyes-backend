@@ -59,6 +59,9 @@ espacio `cetag`, clave `seqblk`):
 una escritura en NVS cada 1000 anuncios (unos 100 s a 100 ms). Reflashear sin borrar
 NVS conserva el contador; borrar la flash lo reinicia a 0 (el servicio lo rechazaría
 como `replay` hasta `retention_s`).
+Si NVS falla, el firmware sigue anunciando y avisa por serie (`WARN nvs_begin_failed` /
+`nvs_write_failed`): el `seq` deja de ser persistente y vuelve el riesgo de `replay`.
+El test comprueba que `SEQ_BLOCK` y la clave NVS del modelo coinciden con el `.ino`.
 `tests/test_tag_seq_scheme.py` modela este esquema y prueba que `LocationService`
 acepta todos los paquetes de cientos de reinicios, y que el esquema anterior se rechazaba.
 
