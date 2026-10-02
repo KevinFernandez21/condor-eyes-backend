@@ -6,12 +6,13 @@ from datetime import UTC, datetime
 import pytest
 
 from bus import MetadataEnvelope, Topic, envelope_to_dict
-from tracing import TraceStore
+from tracing import PrivacyFilter, TraceStore
 from tracing.langfuse_sink import (
     LangfuseConfig,
     LangfuseDecisionTracer,
     create_tracer_from_env,
 )
+from tracing.privacy import PrivacyConfigError
 
 
 class FakeSpan:
@@ -98,6 +99,28 @@ def test_repr_de_config_no_filtra_secretos():
     assert "sk-lf-999" not in repr(cfg) and "pk-lf-123" not in repr(cfg)
 
 
+def test_clave_hmac_invalida_falla_con_error_claro_antes_de_crear_el_cliente(monkeypatch):
+    import tracing.langfuse_sink as sink
+
+    monkeypatch.setattr(sink, "_make_client", lambda c: pytest.fail("no debe crear cliente"))
+    env = {"LANGFUSE_PUBLIC_KEY": "pk", "LANGFUSE_SECRET_KEY": "sk",
+           "LANGFUSE_HOST": "http://h", "TRACING_HASH_KEY": "corta"}
+    with pytest.raises(PrivacyConfigError, match="TRACING_HASH_KEY"):
+        create_tracer_from_env(TraceStore(), env=env)
+
+
+def test_end_to_end_no_finito_no_se_exporta():
+    class Odd(TraceStore):
+        def get(self, correlation_id):
+            return {"hops": [], "end_to_end_ms": float("inf")}
+
+    client = FakeClient()
+    tracer = LangfuseDecisionTracer(client, Odd())
+    tracer.on_message(Topic.EVENTS, envelope_to_dict(Topic.EVENTS, decision_envelope()))
+    out = next(kw for kind, kw in client.calls if kind == "start")["output"]
+    assert out["end_to_end_ms"] is None
+
+
 def test_create_tracer_sin_claves_devuelve_none():
     assert create_tracer_from_env(TraceStore(), env={}) is None
 
@@ -118,11 +141,14 @@ def test_create_tracer_sin_sdk_instalado_se_degrada(monkeypatch):
 
 def test_una_traza_por_decision_de_fusion_con_hijos_de_evidencia():
     client, store = FakeClient(), TraceStore()
-    tracer = LangfuseDecisionTracer(client, store)
+    privacy = PrivacyFilter(b"k" * 32)
+    tracer = LangfuseDecisionTracer(client, store, privacy)
     record(store, tracer, Topic.EVENTS, decision_envelope())
     starts = [kw for kind, kw in client.calls if kind == "start"]
     assert starts[0]["name"] == "fusion.decision"
-    assert starts[0]["trace_context"] == {"trace_id": "trace-dec-1"}
+    # el seed es el id HMAC: el id crudo nunca sale (ni como semilla)
+    assert starts[0]["trace_context"] == {"trace_id": f"trace-{privacy.hash('dec-1')}"}
+    assert "dec-1" not in json.dumps(client.calls, default=str)
     assert starts[0]["output"]["outcome"] == "alert"
     assert {s["name"] for s in starts[1:]} >= {"evidence.identity"}
     assert ("end", {}) in client.calls
@@ -131,7 +157,7 @@ def test_una_traza_por_decision_de_fusion_con_hijos_de_evidencia():
 def test_evento_de_regla_y_comando_del_supervisor_se_trazan_como_reglas():
     client, store = FakeClient(), TraceStore()
     tracer = LangfuseDecisionTracer(client, store)
-    evt = MetadataEnvelope(source="event", payload={"type": "person_in_zone", "zone_id": "z1"})
+    evt = MetadataEnvelope(source="event", payload={"type": "zone_intrusion", "zone_id": "z1"})
     cmd = MetadataEnvelope(source="supervisor", payload={"action": "restart", "target": "tracker"})
     other = MetadataEnvelope(source="tracker", payload={"tracks": []})
     record(store, tracer, Topic.EVENTS, evt)
@@ -150,7 +176,7 @@ def test_el_contexto_causal_viaja_en_la_traza():
     tracer = LangfuseDecisionTracer(client, store)
     det = MetadataEnvelope(source="inference", payload={"detections": []}, event_id="d")
     trk = det.derive("tracker", {"tracks": []}, suffix="tracks")
-    evt = trk.derive("event", {"type": "person_in_zone", "zone_id": "z"}, suffix="events/0")
+    evt = trk.derive("event", {"type": "zone_intrusion", "zone_id": "z"}, suffix="events/0")
     record(store, tracer, Topic.DETECTIONS, det)
     record(store, tracer, Topic.TRACKS, trk)
     record(store, tracer, Topic.EVENTS, evt)

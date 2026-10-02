@@ -15,7 +15,7 @@ def build():
     tap.add_listener(store.record)
     det = MetadataEnvelope(source="inference", payload={"detections": []}, event_id="c1", stream_id="cam-1")
     trk = det.derive("tracker", {"tracks": []}, suffix="tracks")
-    evt = trk.derive("event", {"type": "person_in_zone", "zone_id": "z1"}, suffix="events/0")
+    evt = trk.derive("event", {"type": "zone_intrusion", "zone_id": "z1"}, suffix="events/0")
     tap.record(Topic.DETECTIONS, det)
     tap.record(Topic.TRACKS, trk)
     tap.record(Topic.EVENTS, evt)

@@ -28,6 +28,7 @@ se importa de forma diferida.
 from __future__ import annotations
 
 import logging
+import math
 import os
 from collections import OrderedDict
 from collections.abc import Mapping
@@ -132,7 +133,8 @@ class LangfuseDecisionTracer:
         trace = self._store.get(data.get("correlation_id") or data["event_id"]) or {}
         chain = [self._privacy.hop(hop) for hop in trace.get("hops", [])]
         end_to_end = trace.get("end_to_end_ms")
-        output = {**payload, "end_to_end_ms": end_to_end if isinstance(end_to_end, int | float) else None}
+        finite = isinstance(end_to_end, int | float) and math.isfinite(end_to_end)
+        output = {**payload, "end_to_end_ms": end_to_end if finite else None}
         envelope = self._privacy.envelope({**data, "payload": {}})
         metadata = {
             "decision_engine": "fusion_rules" if name == "fusion.decision" else "rules",
@@ -176,6 +178,8 @@ def create_tracer_from_env(
     config = LangfuseConfig.from_env(env)
     if config is None:
         return None
+    # Antes de crear el cliente: una clave HMAC inválida debe fallar fuerte (PrivacyConfigError).
+    privacy = PrivacyFilter.from_env(env)
     try:
         client = _make_client(config)
     except ImportError:
@@ -188,4 +192,4 @@ def create_tracer_from_env(
         logger.warning("No se pudo crear el cliente de Langfuse; desactivado", exc_info=True)
         return None
     logger.info("Langfuse activo: metadata filtrada hacia %s", config.host)
-    return LangfuseDecisionTracer(client, store)
+    return LangfuseDecisionTracer(client, store, privacy)

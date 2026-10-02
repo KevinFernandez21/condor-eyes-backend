@@ -49,7 +49,7 @@ def _event_rule(track):
     """Un evento por cada mensaje de tracks, con zona sintética."""
     time.sleep(0.01)  # costo simulado de la regla
     zone = ZONES[hash(track.event_id) % len(ZONES)]
-    return [{"type": "person_in_zone", "zone_id": zone, "tracks": len(track.payload["tracks"])}]
+    return [{"type": "zone_intrusion", "zone_id": zone, "tracks": len(track.payload["tracks"])}]
 
 
 async def _publish_synthetic(runtime: AgentRuntime, period: float) -> None:
