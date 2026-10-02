@@ -625,6 +625,21 @@ def test_naive_now_gives_clear_error():
         make_engine().evaluate(FusionInput(), NOW.replace(tzinfo=None))
 
 
+class _StubEnvelope:
+    """Sobre mínimo (duck-typing): permite probar payloads que un MetadataEnvelope
+    estricto (NaN, tipos no JSON) rechazaría al construirse."""
+
+    def __init__(self, source, payload):
+        self.source = source
+        self.payload = payload
+        self.stream_id = None
+        self.created_at = FRESH
+
+
+def _stub_envelope(source, payload):
+    return _StubEnvelope(source, payload)
+
+
 @pytest.mark.parametrize(
     "payload",
     [
@@ -636,7 +651,7 @@ def test_naive_now_gives_clear_error():
     ],
 )
 def test_identity_adapter_returns_invalid_input_instead_of_raising(payload):
-    env = MetadataEnvelope(source="identity", payload=payload, created_at=FRESH)
+    env = _stub_envelope("identity", payload)
     ev = identity_from_envelope("env-1", "cam1/1", env)
     assert ev.status is IdentityStatus.INVALID_INPUT and ev.person_id is None
     assert ev.score == 0.0 and ev.evidence_id == "env-1"
@@ -657,6 +672,6 @@ def test_identity_adapter_returns_invalid_input_instead_of_raising(payload):
     ],
 )
 def test_reid_adapter_returns_inconclusive_instead_of_raising(payload):
-    env = MetadataEnvelope(source="reid", payload=payload, created_at=FRESH)
+    env = _stub_envelope("reid", payload)
     link = reid_from_envelope("env-2", env)
     assert link.status is ReidStatus.INCONCLUSIVE and link.confidence == 0.0
