@@ -12,8 +12,9 @@ los adaptadores viven en ``bus.memory`` y ``bus.agentscope_hub``.
 from __future__ import annotations
 
 import json
+import math
 import uuid
-from collections.abc import AsyncIterator, Iterable, Mapping
+from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from enum import StrEnum
@@ -107,13 +108,33 @@ class MetadataEnvelope:
         )
 
 
+class MetadataSubscription(Protocol):
+    """Suscripción de un consumidor: iterable asíncrono que se puede cerrar.
+
+    Al cerrarla entrega lo ya encolado y luego termina la iteración.
+    """
+
+    def __aiter__(self) -> MetadataSubscription:
+        """Devuelve el propio iterador."""
+
+    async def __anext__(self) -> MetadataEnvelope:
+        """Siguiente mensaje; ``StopAsyncIteration`` al cerrarse."""
+
+    def close(self) -> None:
+        """Cierra la suscripción tras entregar lo pendiente."""
+
+    @property
+    def pending(self) -> int:
+        """Mensajes encolados aún no entregados."""
+
+
 class MetadataHub(Protocol):
     """Interfaz que deberá adaptar el mecanismo de mensajería de AgentScope."""
 
     async def publish(self, topic: Topic, message: MetadataEnvelope) -> None:
         """Publica metadata en un canal tipado."""
 
-    def subscribe(self, topic: Topic) -> AsyncIterator[MetadataEnvelope]:
+    def subscribe(self, topic: Topic) -> MetadataSubscription:
         """Suscribe un consumidor a un canal tipado."""
 
 
@@ -165,6 +186,11 @@ def _looks_like_array(value: object) -> bool:
 
 def _check_value(value: object, path: str, depth: int) -> None:
     if isinstance(value, _JSON_SCALARS):
+        if isinstance(value, float) and not math.isfinite(value):
+            raise InvalidEnvelopeError(
+                f"El payload no es serializable a JSON: número no finito "
+                f"({value}) en {path}"
+            )
         return
     if isinstance(value, bytes | bytearray | memoryview):
         raise InvalidEnvelopeError(
@@ -215,11 +241,6 @@ def validate_payload(payload: object) -> None:
     _check_value(payload, "payload", 0)
 
 
-def _dump_payload(payload: Mapping[str, Any]) -> str:
-    validate_payload(payload)
-    return json.dumps(payload, separators=(",", ":"))
-
-
 def validate_envelope(topic: Topic | str, envelope: MetadataEnvelope) -> Topic:
     """Valida tópico, versiones y contenido del envelope.
 
@@ -249,13 +270,24 @@ def validate_envelope(topic: Topic | str, envelope: MetadataEnvelope) -> Topic:
 # --- Serialización --------------------------------------------------------
 
 
-def envelope_to_dict(topic: Topic | str, envelope: MetadataEnvelope) -> dict[str, Any]:
-    """Serializa un envelope validado a un dict JSON-compatible."""
-    parsed = validate_envelope(topic, envelope)
+def envelope_to_dict(
+    topic: Topic | str, envelope: MetadataEnvelope, *, validate: bool = True
+) -> dict[str, Any]:
+    """Serializa un envelope a un dict JSON-compatible.
+
+    Con ``validate=False`` se omite la validación (y la copia del payload) para
+    envelopes que el llamador ya validó, p. ej. justo después de ``publish``.
+    """
+    if validate:
+        parsed = validate_envelope(topic, envelope)
+        payload: Any = json.loads(json.dumps(envelope.payload, allow_nan=False))
+    else:
+        parsed = Topic(topic)
+        payload = envelope.payload
     return {
         "topic": parsed.value,
         "source": envelope.source,
-        "payload": json.loads(_dump_payload(envelope.payload)),
+        "payload": payload,
         "stream_id": envelope.stream_id,
         "created_at": envelope.created_at.isoformat(),
         "schema_version": envelope.schema_version,

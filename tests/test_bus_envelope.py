@@ -225,3 +225,28 @@ def test_self_referencing_payload_is_rejected():
     payload["self"] = payload
     with pytest.raises(InvalidEnvelopeError, match="circular|profundidad"):
         MetadataEnvelope(source="x", payload=payload)
+
+
+@pytest.mark.parametrize("bad", [float("nan"), float("inf"), float("-inf")])
+def test_non_finite_floats_are_rejected(bad):
+    with pytest.raises(InvalidEnvelopeError, match="no finito"):
+        MetadataEnvelope(source="x", payload={"d": [{"conf": bad}]})
+
+
+def test_envelope_to_dict_never_emits_invalid_json():
+    import json
+
+    data = envelope_to_dict(Topic.EVENTS, make())
+    json.dumps(data, allow_nan=False)
+
+
+def test_envelope_to_dict_can_skip_revalidation_for_trusted_envelopes(monkeypatch):
+    import bus.hub as hub_module
+
+    envelope = make()
+    calls = []
+    monkeypatch.setattr(hub_module, "validate_payload", lambda p: calls.append(p))
+    envelope_to_dict(Topic.EVENTS, envelope, validate=False)
+    assert calls == []
+    envelope_to_dict(Topic.EVENTS, envelope)
+    assert len(calls) == 1

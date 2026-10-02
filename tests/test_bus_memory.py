@@ -83,14 +83,65 @@ async def test_publish_after_close_fails():
         hub.subscribe(Topic.EVENTS)
 
 
-async def test_slow_consumer_drops_oldest_and_counts_it():
+async def test_telemetry_topics_drop_oldest_and_report_error_event():
+    hub = InMemoryHub(queue_size=2)
+    sub = hub.subscribe(Topic.DETECTIONS)
+    errors = hub.subscribe(Topic.ERRORS)
+    for i in range(4):
+        await hub.publish(Topic.DETECTIONS, env(f"d{i}"))
+    await hub.close()
+    assert [m.event_id for m in await drain(sub)] == ["d2", "d3"]
+    assert hub.stats["dropped"] == 2
+    (first,) = await drain(errors)  # throttled: solo el primer descarte
+    assert first.source == "hub"
+    assert first.payload["stage"] == "queue_overflow"
+    assert first.payload["failed_topic"] == "vision.detections"
+    assert first.payload["failed_event_id"] == "d0"
+
+
+async def test_overflow_error_events_are_throttled_every_100_drops():
+    hub = InMemoryHub(queue_size=5)
+    hub.subscribe(Topic.DETECTIONS)
+    errors = hub.subscribe(Topic.ERRORS)
+    for i in range(206):
+        await hub.publish(Topic.DETECTIONS, env(f"d{i}"))
+    await hub.close()
+    reported = await drain(errors)
+    assert [m.payload["dropped_total"] for m in reported] == [1, 101, 201]
+
+
+async def test_events_and_commands_are_lossless_beyond_queue_size():
     hub = InMemoryHub(queue_size=2)
     sub = hub.subscribe(Topic.EVENTS)
-    for i in range(4):
+    errors = hub.subscribe(Topic.ERRORS)
+    for i in range(5):
         await hub.publish(Topic.EVENTS, env(f"e{i}"))
     await hub.close()
-    assert [m.event_id for m in await drain(sub)] == ["e2", "e3"]
+    assert [m.event_id for m in await drain(sub)] == [f"e{i}" for i in range(5)]
+    assert hub.stats["dropped"] == 0
+    assert hub.stats["overflow"] == 3
+    (report,) = await drain(errors)
+    assert report.payload["stage"] == "queue_overflow"
+    assert report.payload["policy"] == "lossless"
+
+
+async def test_error_topic_overflow_does_not_recurse():
+    hub = InMemoryHub(queue_size=1)
+    hub.subscribe(Topic.ERRORS)
+    for i in range(3):
+        await hub.publish(Topic.ERRORS, env(f"x{i}"))
     assert hub.stats["dropped"] == 2
+    assert hub.stats["published"] == 3
+
+
+async def test_history_is_bounded_and_can_be_disabled():
+    hub = InMemoryHub(history_size=2)
+    for i in range(4):
+        await hub.publish(Topic.HEALTH, env(f"h{i}"))
+    assert [m.event_id for _, m in hub.history] == ["h2", "h3"]
+    off = InMemoryHub(history_size=0)
+    await off.publish(Topic.HEALTH, env("h"))
+    assert list(off.history) == []
 
 
 async def test_subscription_close_stops_only_that_subscriber():

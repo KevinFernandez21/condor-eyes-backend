@@ -418,8 +418,10 @@ def _agentscope_imports() -> list[tuple[Path, str, str]]:
     found = []
     for path in Path("src").rglob("*.py"):
         for node in ast.walk(ast.parse(path.read_text(encoding="utf-8"))):
-            if isinstance(node, ast.ImportFrom) and (node.module or "").startswith(
-                "agentscope"
+            if (
+                isinstance(node, ast.ImportFrom)
+                and node.level == 0
+                and (node.module or "").split(".")[0] == "agentscope"
             ):
                 found += [(path, node.module or "", alias.name) for alias in node.names]
             elif isinstance(node, ast.Import):
