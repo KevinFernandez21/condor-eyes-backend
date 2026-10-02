@@ -13,6 +13,7 @@ no son comparables. Un índice de nube (`cloud=True`) solo admite enrolar con
 
 from __future__ import annotations
 
+import os
 import re
 import sqlite3
 import time
@@ -23,7 +24,7 @@ from pathlib import Path
 import numpy as np
 
 from .embedders import CloudConsentError
-from .verify import VerifyStatus, write_audit
+from .verify import VerifyStatus, restrict_permissions, write_audit
 
 MEMORY = ":memory:"
 
@@ -59,7 +60,12 @@ class FaceIndex:
             self.audit_path = (
                 Path(audit_path) if audit_path else p.with_suffix(".audit.jsonl")
             )
+        if self.path != MEMORY and not Path(self.path).exists():
+            # Se crea ya con 0600 (POSIX) para no dejar una ventana con permisos amplios.
+            os.close(os.open(self.path, os.O_CREAT | os.O_WRONLY, 0o600))
         self._con = sqlite3.connect(self.path)
+        # Borrado físico: las páginas liberadas se sobrescriben con ceros...
+        self._con.execute("PRAGMA secure_delete=ON")
         if self.path != MEMORY:
             self._con.execute("PRAGMA journal_mode=WAL")
         self._con.executescript(
@@ -78,6 +84,20 @@ class FaceIndex:
             """
         )
         self._init_meta()
+        self._restrict_files()
+
+    def _restrict_files(self) -> None:
+        """Permisos 0600 en el índice y sus archivos WAL/SHM (best effort; ver docs)."""
+        if self.path == MEMORY:
+            return
+        for suffix in ("", "-wal", "-shm"):
+            restrict_permissions(self.path + suffix)
+
+    def _scrub(self) -> None:
+        """...y el WAL se vuelca y se trunca, para que no queden copias de las páginas."""
+        if self.path != MEMORY:
+            self._con.execute("PRAGMA wal_checkpoint(TRUNCATE)").fetchall()
+        self._restrict_files()
 
     def _meta(self, key: str) -> str | None:
         row = self._con.execute("SELECT value FROM meta WHERE key=?", (key,)).fetchone()
@@ -96,6 +116,11 @@ class FaceIndex:
             raise ValueError(
                 f"El índice es del modelo '{stored}', no de '{self.model_id}': "
                 "los vectores de modelos distintos no son comparables"
+            )
+        elif (self._meta("cloud") == "1") != self.cloud:
+            raise ValueError(
+                f"El índice de '{stored}' se creó con cloud={self._meta('cloud') == '1'}: "
+                "abrirlo con otro valor de nube saltaría la guardia de consentimiento de nube"
             )
 
     @property
@@ -160,6 +185,7 @@ class FaceIndex:
             self._con.execute(
                 "INSERT OR REPLACE INTO meta VALUES ('dim', ?)", (str(mat.shape[1]),)
             )
+        self._scrub()
         self._audit(
             "enroll",
             person_id=person_id,
@@ -174,6 +200,7 @@ class FaceIndex:
             n = self._con.execute(
                 "DELETE FROM vectors WHERE person_id=?", (person_id,)
             ).rowcount
+        self._scrub()
         self._audit("delete", person_id=person_id, existed=n > 0, actor=actor)
         return n > 0
 
@@ -188,6 +215,7 @@ class FaceIndex:
         if gone:
             with self._con:
                 self._con.execute("DELETE FROM vectors WHERE expires_at <= ?", (now,))
+            self._scrub()
             self._audit("purge_expired", person_ids=gone)
         return sorted(gone)
 

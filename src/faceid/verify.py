@@ -10,6 +10,7 @@
 from __future__ import annotations
 
 import json
+import os
 import time
 from collections.abc import Sequence
 from dataclasses import dataclass, field
@@ -85,6 +86,20 @@ def sharpness(img: np.ndarray, box: Sequence[float]) -> float:
     )
 
 
+def restrict_permissions(path: str | Path) -> None:
+    """Deja el archivo accesible solo al propietario (0600). Best effort.
+
+    En Windows `chmod` solo gestiona el bit de solo lectura: ahí los permisos reales los
+    dan las ACL de NTFS (restringir la carpeta de datos al responsable, p. ej. con `icacls`).
+    """
+    p = Path(path)
+    if p.exists():
+        try:
+            os.chmod(p, 0o600)
+        except OSError:
+            pass
+
+
 def write_audit(path: str | Path, action: str, **kw: Any) -> None:
     """Añade una línea JSONL al log de auditoría. Nunca debe recibir datos biométricos."""
     path = Path(path)
@@ -94,6 +109,7 @@ def write_audit(path: str | Path, action: str, **kw: Any) -> None:
             json.dumps({"t": time.time(), "action": action, **kw}, ensure_ascii=False)
             + "\n"
         )
+    restrict_permissions(path)
 
 
 class EnrollmentStore:
