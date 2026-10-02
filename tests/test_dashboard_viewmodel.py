@@ -360,6 +360,60 @@ def test_unknown_outcome_label_is_spanish_and_raw_kept():
     assert alert["outcome_raw"] == "weird"
 
 
+def component(name, state="ok", **extra):
+    return agent(f"component/{name}", "component", state, **extra)
+
+
+def test_components_are_listed_separately_and_not_as_graph_nodes():
+    agents = [agent("ingest", "ingest"), component("camera"),
+              component("detector", "degraded", last_error="sin pesos")]
+    comps = vm.components(agents)
+    assert [c["name"] for c in comps] == ["camera", "detector"]
+    assert comps[1]["state"] == "degraded" and comps[1]["detail"] == "sin pesos"
+    assert comps[0]["detail"] is None
+    graph = vm.build_graph(agents, [], ROUTES)
+    assert not any(n["id"] == "component" for n in graph["nodes"])
+
+
+@pytest.mark.parametrize(
+    ("raw", "expected"),
+    [("ok", "ok"), ("simulated", "ok"), ("degraded", "degraded"), ("starting", "degraded"),
+     ("disabled", "stopped"), ("not_used", "stopped"), ("stopped", "stopped"), ("???", "unknown")],
+)
+def test_component_state_class(raw, expected):
+    assert vm.components([component("x", raw)])[0]["state_class"] == expected
+
+
+def test_health_strip_counts_roles_only_when_agents_given():
+    agents = [agent("ingest", "ingest"), agent("tracker", "tracker", "failed"),
+              component("camera"), component("detector")]
+    api = {"status": "degraded", "agents_total": 4, "agents_running": 3, "agents_failed": 1}
+    strip = vm.health_strip(api, [], connected=True, agents=agents)
+    assert (strip["agents_total"], strip["agents_running"], strip["agents_failed"]) == (2, 1, 1)
+
+
+def test_graph_nodes_carry_mini_stats_from_agents_and_rates():
+    agents = [agent("ingest/a", "ingest", queue_depth=2, restarts=1),
+              agent("ingest/b", "ingest", queue_depth=5, restarts=2)]
+    graph = vm.build_graph(agents, [], ROUTES, node_rates={"ingest": 12.5})
+    node = next(n for n in graph["nodes"] if n["id"] == "ingest")
+    assert node["queue_depth"] == 5 and node["restarts"] == 3 and node["rate_per_s"] == 12.5
+    other = next(n for n in graph["nodes"] if n["id"] == "tracker")
+    assert other["queue_depth"] is None and other["rate_per_s"] is None
+
+
+def test_summary_never_renders_none():
+    entry = vm.feed_entry(envelope("system.health", {"instance": None, "state": "running"}))
+    assert "None" not in entry["summary"] and "null" not in entry["summary"]
+    assert "instance=—" in entry["summary"]
+
+
+def test_alert_toast_is_spanish_with_zone_or_stream():
+    assert vm.format_alert(decision_env())["toast"] == "Alerta: persona en bodega"
+    inconclusive = vm.format_alert(decision_env(outcome="inconclusive", zone_id=None))
+    assert inconclusive["toast"] == "No concluyente: persona en cam-1"
+
+
 def test_evidence_entries_get_spanish_kind_and_role_labels():
     alert = vm.format_alert(
         decision_env(evidence=[{"evidence_id": "e", "kind": "location", "role": "supports"}])

@@ -6,12 +6,15 @@ Todo ocurre en el bucle de asyncio del servidor del dashboard; no hay hilos.
 
 from __future__ import annotations
 
+import time
 from collections import OrderedDict, deque
-from collections.abc import Iterable, Mapping, Sequence
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from datetime import UTC, datetime
 from typing import Any
 
 from . import viewmodel as vm
+from .cameras import CLASSES, CameraRegistry, detection_class
+from .timeline import Timeline
 
 CAMERA_PLACEHOLDER = {
     "available": False,
@@ -30,7 +33,13 @@ class DashboardState:
         alert_size: int = 100,
         site: Mapping[str, Any] | None = None,
         routes: Sequence[vm.RouteSpec] | None = None,
+        clock: Callable[[], float] = time.time,
     ) -> None:
+        self._clock = clock
+        self._cameras = CameraRegistry(clock=clock)
+        self._timeline = Timeline()
+        self._node_rates: dict[str, float] = {}
+        self._prev_processed: dict[str, tuple[float, int]] = {}
         self._site = site
         self._routes = list(routes) if routes is not None else None
         self._feed: deque[dict[str, Any]] = deque(maxlen=feed_size)  # más nuevo primero
@@ -81,6 +90,7 @@ class DashboardState:
 
     def on_poll(self, data: Mapping[str, Any]) -> None:
         self._agents = list(data.get("agents") or [])
+        self._update_node_rates()
         self._topics = list(data.get("topics") or [])
         self._api_health = dict(data.get("health") or {})
         self._api_ok = True
@@ -90,18 +100,50 @@ class DashboardState:
             if isinstance(env, Mapping):
                 self._add_decision(env)
 
+    def _update_node_rates(self) -> None:
+        """msg/s por rol a partir del contador ``processed`` entre sondeos."""
+        now = self._clock()
+        totals: dict[str, int] = {}
+        for item in self._agents:
+            if item.get("role") == "component":
+                continue
+            totals[str(item.get("role"))] = totals.get(str(item.get("role")), 0) + int(
+                item.get("processed") or 0
+            )
+        for role, total in totals.items():
+            prev = self._prev_processed.get(role)
+            if prev is not None and now > prev[0] and total >= prev[1]:
+                self._node_rates[role] = round((total - prev[1]) / (now - prev[0]), 2)
+            self._prev_processed[role] = (now, total)
+
     def on_poll_error(self, reason: str) -> None:
         self._api_ok = False
         self._api_error = reason
 
     def _ingest(self, env: Mapping[str, Any]) -> None:
         self._feed.appendleft(vm.feed_entry(env))
+        self._cameras.observe(env)
+        self._track_timeline(env)
         if vm.is_decision(env):
             self._add_decision(env)
         if vm.is_location(env):
             self._locations.appendleft(_slim(env))
         if env.get("topic") in ("system.health", "stream.status"):
             self._streams.appendleft(_slim(env))
+
+    def _track_timeline(self, env: Mapping[str, Any]) -> None:
+        payload = env.get("payload")
+        stream = env.get("stream_id")
+        if env.get("topic") != "vision.detections" or not isinstance(stream, str):
+            return
+        dets = payload.get("detections") if isinstance(payload, Mapping) else None
+        if not isinstance(dets, list):
+            return
+        counts = dict.fromkeys(CLASSES, 0)
+        for det in dets:
+            if isinstance(det, Mapping):
+                counts[detection_class(det)] += 1
+        self._timeline.add(stream, self._clock(), counts)
 
     def _add_decision(self, env: Mapping[str, Any]) -> None:
         key = env.get("event_id") or (env.get("payload") or {}).get("decision_id")
@@ -124,7 +166,7 @@ class DashboardState:
         correlation_id: str | None = None,
         limit: int = 100,
     ) -> dict[str, Any]:
-        graph = vm.build_graph(self._agents, self._topics, self._routes)
+        graph = vm.build_graph(self._agents, self._topics, self._routes, self._node_rates)
         graph["stale"] = not self._api_ok
         decisions = sorted(
             self._decisions, key=lambda e: str(e.get("created_at") or ""), reverse=True
@@ -151,7 +193,12 @@ class DashboardState:
             "alerts": vm.format_alerts(decisions, limit=30),
             "site": vm.site_view(self._site, self._locations),
             "tags": vm.tag_presence(self._locations),
-            "health": vm.health_strip(self._api_health, streams, connected=self._api_ok),
+            "health": vm.health_strip(
+                self._api_health, streams, connected=self._api_ok, agents=self._agents
+            ),
+            "components": vm.components(self._agents),
+            "cameras": self._cameras.views(),
+            "timeline": self._timeline.snapshot(self._clock(), minutes=60),
             "camera": dict(CAMERA_PLACEHOLDER),
         }
 

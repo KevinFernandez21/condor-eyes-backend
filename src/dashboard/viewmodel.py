@@ -54,9 +54,10 @@ PLANNED_ROUTES: tuple[RouteSpec, ...] = (
 
 # Posición (columna, fila) de cada rol en el lienzo; los desconocidos van abajo.
 LAYOUT: dict[str, tuple[int, int]] = {
+    # fila 0: cadena principal; fila 1: supervisor y comms; fila 2: plugins laterales
     "ingest": (0, 0), "inference": (1, 0), "tracker": (2, 0), "event": (3, 0), "storage": (4, 0),
-    "location": (0, 1), "fusion": (3, 1), "actuation": (4, 1),
-    "identity": (0, 2), "supervisor": (2, 2), "comms": (4, 2),
+    "supervisor": (2, 1), "comms": (4, 1),
+    "location": (0, 2), "identity": (1, 2), "fusion": (2, 2), "actuation": (3, 2),
 }  # fmt: skip
 CONTROL_TOPICS = frozenset({"system.health", "system.commands", "system.errors"})
 
@@ -92,6 +93,36 @@ def agent_state(agent: Mapping[str, Any]) -> str:
     return "degraded"
 
 
+def _max_int(values: Iterable[Any]) -> int | None:
+    nums = [int(v) for v in values if isinstance(v, (int, float)) and not isinstance(v, bool)]
+    return max(nums) if nums else None
+
+
+_COMPONENT_CLASS = {
+    "ok": "ok", "simulated": "ok",
+    "starting": "degraded", "degraded": "degraded",
+    "disabled": "stopped", "not_used": "stopped", "stopped": "stopped",
+}  # fmt: skip
+
+
+def components(agents: Iterable[Mapping[str, Any]]) -> list[dict[str, Any]]:
+    """Componentes del ejecutor (cámara, detector, fusión…), aparte del grafo."""
+    out = []
+    for item in agents:
+        if item.get("role") != "component":
+            continue
+        state = str(item.get("state", "")).lower()
+        out.append(
+            {
+                "name": str(item.get("name", "")).removeprefix("component/"),
+                "state": state or "—",
+                "state_class": _COMPONENT_CLASS.get(state, "unknown"),
+                "detail": item.get("last_error") or None,
+            }
+        )
+    return sorted(out, key=lambda c: c["name"])
+
+
 def _edge_label(topic: str, stats: Mapping[str, Any] | None) -> str:
     if stats is None:
         return topic
@@ -109,11 +140,18 @@ def build_graph(
     agents: Sequence[Mapping[str, Any]],
     topics: Sequence[Mapping[str, Any]],
     routes: Sequence[RouteSpec] | None = None,
+    node_rates: Mapping[str, float] | None = None,
 ) -> dict[str, Any]:
-    """Nodos = roles; aristas = tópicos entre publicador y consumidor."""
+    """Nodos = roles; aristas = tópicos entre publicador y consumidor.
+
+    Los componentes (``role == "component"``) no son nodos: van en ``components``.
+    """
     routes = list(default_routes() if routes is None else routes)
+    node_rates = node_rates or {}
     by_role: dict[str, list[Mapping[str, Any]]] = {}
     for item in agents:
+        if item.get("role") == "component":
+            continue
         by_role.setdefault(str(item.get("role", item.get("name", "?"))), []).append(item)
     known = {r.name for r in routes}
     for role in by_role:  # roles que la API reporta y no conocemos
@@ -150,6 +188,9 @@ def build_graph(
                 "col": col,
                 "row": row,
                 "instances": len(members),
+                "queue_depth": _max_int(m.get("queue_depth") for m in members),
+                "restarts": sum(int(m.get("restarts") or 0) for m in members) if members else None,
+                "rate_per_s": node_rates.get(route.name),
                 "planned": route.planned and not members,
                 "detail": detail,
             }
@@ -213,7 +254,7 @@ def _summary(payload: Mapping[str, Any], limit: int = 140) -> str:
     for key, value in payload.items():
         if isinstance(value, (dict, list)):
             continue
-        parts.append(f"{key}={value}")
+        parts.append(f"{key}={'—' if value is None else value}")
     text = " ".join(parts) or f"{len(payload)} campos"
     return text if len(text) <= limit else text[: limit - 1] + "…"
 
@@ -355,7 +396,14 @@ def format_alert(envelope: Mapping[str, Any]) -> dict[str, Any]:
         "person_id": p.get("person_id"),  # tal como llega: seudonimizado
         "track_ref": p.get("track_ref"),
         "requires_operator": True,  # el operador humano siempre es la autoridad final
+        "toast": _toast(outcome, p, envelope),
     }
+
+
+def _toast(outcome: str, p: Mapping[str, Any], envelope: Mapping[str, Any]) -> str:
+    where = p.get("zone_id") or p.get("stream_id") or envelope.get("stream_id") or "—"
+    head = "Alerta" if outcome == "alert" else _OUTCOME_LABEL.get(outcome, "Decisión")
+    return f"{head}: persona en {where}"
 
 
 def format_alerts(
@@ -504,14 +552,23 @@ def stream_health(envelopes: Iterable[Mapping[str, Any]]) -> list[dict[str, Any]
 
 
 def health_strip(
-    api: Mapping[str, Any] | None, streams: Sequence[Mapping[str, Any]], *, connected: bool
+    api: Mapping[str, Any] | None,
+    streams: Sequence[Mapping[str, Any]],
+    *,
+    connected: bool,
+    agents: Sequence[Mapping[str, Any]] | None = None,
 ) -> dict[str, Any]:
     """Franja de salud: estado de la API, agentes y streams."""
     if api is None or not connected:
         status = "offline"
     else:
         status = str(api.get("status", "ok"))
-    api = api or {}
+    api = dict(api or {})
+    if agents is not None:  # solo roles: los componentes no cuentan como agentes
+        roles = [a for a in agents if a.get("role") != "component"]
+        api["agents_total"] = len(roles)
+        api["agents_running"] = sum(1 for a in roles if agent_state(a) in ("ok", "degraded"))
+        api["agents_failed"] = sum(1 for a in roles if agent_state(a) == "failed")
     return {
         "status": status,
         "api_connected": connected,

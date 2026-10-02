@@ -149,6 +149,54 @@ def test_state_dedup_index_is_bounded_like_the_decisions():
     assert len(state.snapshot()["alerts"]) == 5
 
 
+def _dets(stream, n=2, ts="2026-01-01T00:00:10+00:00"):
+    return {"type": "envelope", "data": {
+        "topic": "vision.detections", "source": "inference", "stream_id": stream, "created_at": ts,
+        "event_id": f"d-{stream}", "payload": {"detections": [
+            {"xyxy": [0, 0, 100, 100], "cls": 0, "conf": 0.9} for _ in range(n)]}}}
+
+
+def test_state_snapshot_has_cameras_and_timeline_from_detections():
+    state = DashboardState()
+    state.on_ws_message(_dets("cam-01", 2))
+    state.on_ws_message(_dets("cam-02", 1))
+    snap = state.snapshot()
+    assert [c["id"] for c in snap["cameras"]] == ["cam-01", "cam-02"]
+    assert snap["cameras"][0]["counts"]["person"] == 2
+    assert snap["timeline"]["series"]["all"][0]["person"] == 3
+    assert set(snap["timeline"]["series"]) == {"all", "cam-01", "cam-02"}
+
+
+def test_state_detections_do_not_flood_the_feed_history_beyond_its_bound():
+    state = DashboardState(feed_size=10)
+    for _ in range(100):
+        state.on_ws_message(_dets("cam-01"))
+    assert len(state.snapshot()["feed"]) == 10
+
+
+def test_state_snapshot_splits_components_and_counts_roles_only():
+    state = DashboardState()
+    agents = [
+        {"name": "ingest", "role": "ingest", "state": "running"},
+        {"name": "component/camera", "role": "component", "state": "simulated"},
+    ]
+    state.on_poll({"agents": agents, "topics": [], "health": {"status": "ok", "agents_total": 2}})
+    snap = state.snapshot()
+    assert [c["name"] for c in snap["components"]] == ["camera"]
+    assert snap["health"]["agents_total"] == 1
+
+
+def test_state_node_rates_come_from_processed_deltas_between_polls():
+    clock = [100.0]
+    state = DashboardState(clock=lambda: clock[0])
+    row = {"name": "tracker", "role": "tracker", "state": "running", "processed": 10}
+    state.on_poll({"agents": [row], "topics": [], "health": {"status": "ok"}})
+    clock[0] = 102.0
+    state.on_poll({"agents": [{**row, "processed": 30}], "topics": [], "health": {"status": "ok"}})
+    node = next(n for n in state.snapshot()["graph"]["nodes"] if n["id"] == "tracker")
+    assert node["rate_per_s"] == 10.0
+
+
 def test_state_dedup_still_works_with_event_id():
     state = DashboardState(alert_size=3)
     for i in range(3):
