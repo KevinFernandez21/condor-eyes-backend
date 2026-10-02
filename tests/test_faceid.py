@@ -228,3 +228,19 @@ def test_http_range_file_reads_zip_members(monkeypatch):
     monkeypatch.setattr("faceid.digiface.urllib.request.urlopen", fake_urlopen)
     z = zipfile.ZipFile(io.BufferedReader(HttpRangeFile("http://x/y.zip"), 64))
     assert z.read("1/3.png") == b"xyz" * 10
+
+
+def test_payload_coerces_numpy_scalars_from_engine(setup):
+    verifier, _ = setup
+    verifier.engine.faces[1] = [
+        FakeFace(
+            box=(10, 10, 80, 80),
+            score=np.float32(0.95),
+            yaw_ratio=np.float32(0.0),
+            emb=unit(1, 0.05, 0),
+        )
+    ]
+    env = verifier.verify(textured(1), now=1).to_envelope(stream_id="cam1")
+    json.dumps(env.payload)
+    assert type(env.payload["score"]) is float
+    assert type(env.payload["evidence"]["det_score"]) is float

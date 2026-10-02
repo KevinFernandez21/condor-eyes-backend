@@ -207,3 +207,18 @@ def test_color_embedder_ignores_head_region():
     b[:, :30] = 255  # solo cambia la cabeza
     emb = ColorEmbedder()
     assert float(emb(a)[0] @ emb(b)[0]) == pytest.approx(1.0)
+
+
+def test_result_envelope_accepts_numpy_ids_and_times():
+    a = assoc()
+    a.upsert(
+        TrackDescriptor("cam1", np.int64(1), np.float32(0), np.float32(0), vec(1, 0))
+    )
+    r = a.associate(
+        TrackDescriptor("cam2", np.int64(9), np.float32(5), np.float32(5), vec(1, 0))
+    )
+    env = r.to_envelope()
+    json.dumps(env.payload)
+    assert type(env.payload["source_track"]) is int
+    assert type(env.payload["candidate_track"]) is int
+    assert type(env.payload["evidence"]["dt_s"]) is float

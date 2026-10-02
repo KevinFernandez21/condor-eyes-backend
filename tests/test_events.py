@@ -269,3 +269,39 @@ def test_loaders_for_real_data(tmp_path: Path):
         and rows[1].track_ids == ()
         and rows[1].authorized
     )
+
+
+def test_event_envelope_accepts_numpy_inputs_from_tracker():
+    """Un tracker real entrega np.int64/np.float32; el bus estricto los rechaza."""
+    pts = still(0.7, 0.7, 3)
+    obs = [
+        TrackObservation(
+            "cam", np.int64(1), np.float32(i * 0.2), np.float32(x), np.float32(y)
+        )
+        for i, (x, y) in enumerate(pts)
+    ]
+    e = EventEngine([RESTRICTED]).process(obs)[0]
+    env = e.to_envelope()
+    json.dumps(env.payload)
+    assert env.payload["track_ids"] == [1]
+    assert type(env.payload["start_t"]) is float
+    assert type(env.payload["evidence"]["entry_point"][0]) is float
+
+
+def test_event_payload_coerces_numpy_confidence():
+    ev = Event(
+        EventType.LOITERING,
+        "cam",
+        "l",
+        (np.int64(2),),
+        np.float32(1.0),
+        np.float32(2.0),
+        np.float32(0.9),
+        Severity.ALERT,
+        False,
+        {"dwell_s": np.float32(1.5)},
+    )
+    env = ev.to_envelope()
+    json.dumps(env.payload)
+    assert type(env.payload["confidence"]) is float
+    assert type(env.payload["evidence"]["dwell_s"]) is float

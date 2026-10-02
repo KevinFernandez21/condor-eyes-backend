@@ -43,8 +43,8 @@ class VerificationResult:
         return {
             "status": self.status.value,
             "person_id": self.person_id,
-            "score": round(self.score, 4),
-            "threshold": self.threshold,
+            "score": round(float(self.score), 4),
+            "threshold": float(self.threshold),
             "requires_operator": True,
             "evidence": self.evidence,
         }
@@ -198,11 +198,11 @@ class Verifier:
             return VerifyStatus.MULTIPLE_FACES, None, {"faces": len(faces)}
         f = faces[0]
         p = self.policy
-        q = {
-            "face_px": round(f.size, 1),
-            "det_score": round(f.score, 3),
+        q: dict[str, Any] = {
+            "face_px": round(float(f.size), 1),
+            "det_score": round(float(f.score), 3),
             "sharpness": round(sharpness(scaled, f.box), 1),
-            "yaw": round(f.yaw_ratio, 3),
+            "yaw": round(float(f.yaw_ratio), 3),
         }
         low = [
             name

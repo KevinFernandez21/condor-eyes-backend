@@ -9,6 +9,6 @@ ROUTE = AgentRoute(
     kind=AgentKind.REACT,
     purpose="Observa la salud del sistema y emite comandos operativos.",
     singleton=True,
-    consumes=(Topic.HEALTH, Topic.STREAM_STATUS),
+    consumes=(Topic.HEALTH, Topic.STREAM_STATUS, Topic.ERRORS),
     publishes=(Topic.COMMANDS,),
 )

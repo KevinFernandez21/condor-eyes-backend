@@ -35,6 +35,12 @@ class TrackDescriptor:
     embedding: np.ndarray
     zone: str | None = None
 
+    def __post_init__(self) -> None:
+        # El tracker real entrega np.int64/np.float32; el bus solo admite primitivas JSON.
+        object.__setattr__(self, "track_id", int(self.track_id))
+        object.__setattr__(self, "t_first", float(self.t_first))
+        object.__setattr__(self, "t_last", float(self.t_last))
+
     @property
     def key(self) -> tuple[str, int]:
         return (self.stream_id, self.track_id)
@@ -65,7 +71,7 @@ class AssociationResult:
             "candidate_stream": self.candidate[0] if self.candidate else None,
             "candidate_track": self.candidate[1] if self.candidate else None,
             "status": self.status.value,
-            "confidence": round(self.confidence, 4),
+            "confidence": round(float(self.confidence), 4),
             "evidence": dict(self.evidence),
         }
 
