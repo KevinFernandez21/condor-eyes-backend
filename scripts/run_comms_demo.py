@@ -55,7 +55,9 @@ async def _publish_synthetic(runtime: AgentRuntime, period: float) -> None:
             {"id": i, "label": "person", "confidence": round(rng.uniform(0.5, 0.99), 2)}
             for i in range(rng.randint(1, 3))
         ]
-        await runtime.emit("inference", Topic.DETECTIONS, {"detections": detections}, stream_id=camera)
+        det = await runtime.emit(
+            "inference", Topic.DETECTIONS, {"detections": detections}, stream_id=camera
+        )
         if n % 5 == 0:  # decisión de fusión sintética; identificadores ya seudonimizados
             zone = rng.choice(ZONES)
             await runtime.emit(
@@ -69,6 +71,15 @@ async def _publish_synthetic(runtime: AgentRuntime, period: float) -> None:
                     "stream_id": camera,
                     "person_id": f"p-{rng.randrange(16**4):04x}",
                     "requires_operator": True,
+                    # el tracker deriva su event_id de forma determinista: <detección>/tracks
+                    "evidence": [
+                        {
+                            "evidence_id": f"{det.event_id}/tracks",
+                            "kind": "track",
+                            "role": "supports",
+                            "stream_id": camera,
+                        }
+                    ],
                 },
                 stream_id=camera,
             )

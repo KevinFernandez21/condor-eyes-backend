@@ -8,11 +8,12 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from typing import Any
 
 from agents.handlers import AlertSink, CommsHandler
 from bus import MetadataEnvelope, MetadataHub
+from tracing import LangfuseDecisionTracer, TraceStore, create_tracer_from_env
 
 from .api import DEFAULT_WS_QUEUE, check_bind, create_app
 from .tap import BusTap
@@ -102,10 +103,17 @@ class ObservabilityCommsHandler(CommsHandler):
         ws_queue_size: int = DEFAULT_WS_QUEUE,
         allowed_origins: Sequence[str] | None = None,
         tap: BusTap | None = None,
+        traces: TraceStore | None = None,
+        langfuse: bool = True,
     ) -> None:
         check_bind(host, token)  # falla antes de arrancar nada
         super().__init__(sink or _NullSink())
         self.tap = tap or BusTap(hub)
+        self.traces = traces or TraceStore()
+        self.tap.add_listener(self.traces.record)  # antes que Langfuse: la cadena ya incluye el mensaje
+        self._use_langfuse = langfuse
+        self._tracer: LangfuseDecisionTracer | None = None
+        self._remove_tracer: Callable[[], None] | None = None
         self.view = TapSystemView(self.tap)
         self.app = create_app(
             self.view,
@@ -113,6 +121,7 @@ class ObservabilityCommsHandler(CommsHandler):
             host=host,
             ws_queue_size=ws_queue_size,
             allowed_origins=allowed_origins,
+            traces=self.traces,
         )
         self._server = CommsServer(self.app, host, port)
 
@@ -125,13 +134,28 @@ class ObservabilityCommsHandler(CommsHandler):
         self.view.bind_runtime(runtime)
 
     async def start(self) -> None:
+        if self._use_langfuse and self._tracer is None:
+            # Solo si el entorno lo configura (claves + host); si no, no hace nada.
+            self._tracer = create_tracer_from_env(self.traces)
+            if self._tracer is not None:
+                self._remove_tracer = self.tap.add_listener(self._tracer.on_message)
         await self.tap.start()
         try:
             await self._server.start()
         except BaseException:
             await self.tap.stop()
+            self._close_tracer()
             raise
 
     async def stop(self) -> None:
         await self._server.stop()
         await self.tap.stop()
+        self._close_tracer()
+
+    def _close_tracer(self) -> None:
+        if self._remove_tracer is not None:
+            self._remove_tracer()
+            self._remove_tracer = None
+        if self._tracer is not None:
+            self._tracer.close()
+            self._tracer = None
