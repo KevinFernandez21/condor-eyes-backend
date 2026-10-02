@@ -126,7 +126,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     app = SystemApp(config)
     try:
         snapshot = asyncio.run(_run(app, args.duration))
-    except Exception as exc:  # noqa: BLE001 - frontera del CLI: mensaje claro, no traceback
+    except Exception as exc:
         if args.debug:
             raise
         print(

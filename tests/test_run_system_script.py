@@ -105,7 +105,7 @@ def test_ctrl_break_en_subproceso_windows():
 
 
 def test_error_inesperado_no_muestra_traceback(monkeypatch, capsys):
-    import system.cli as cli
+    from system import cli
 
     async def boom(self):
         raise RuntimeError("fallo de prueba")
@@ -119,7 +119,7 @@ def test_error_inesperado_no_muestra_traceback(monkeypatch, capsys):
 
 
 def test_debug_deja_pasar_la_excepcion(monkeypatch):
-    import system.cli as cli
+    from system import cli
 
     async def boom(self):
         raise RuntimeError("fallo de prueba")
