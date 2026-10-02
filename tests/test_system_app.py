@@ -419,3 +419,80 @@ async def test_replay_con_video_inexistente_degrada_sin_caerse(tmp_path):
         )
     finally:
         await app.stop()
+
+
+async def test_pesos_faltantes_explican_como_obtenerlos(tmp_path, monkeypatch):
+    monkeypatch.delenv("CONDOR_WEIGHTS", raising=False)
+    cfg = fast_config("sim")
+    missing = str(tmp_path / "no-existe.pt")
+    cfg = dataclasses.replace(
+        cfg, detector=dataclasses.replace(cfg.detector, kind="yolov8n", weights=missing)
+    )
+    app = SystemApp(cfg, plugins=no_plugins())
+    await app.start()
+    try:
+        assert await wait_for(
+            lambda: app.snapshot()["components"]["detector"]["status"] == "degraded"
+        )
+        detail = app.snapshot()["components"]["detector"]["detail"]
+        assert missing in detail
+        assert "CONDOR_WEIGHTS" in detail
+        assert "ultralytics" in detail
+        assert "no se descarga" in detail
+    finally:
+        await app.stop()
+
+
+async def test_env_condor_weights_tiene_prioridad(tmp_path, monkeypatch):
+    env_path = str(tmp_path / "desde-env.pt")
+    monkeypatch.setenv("CONDOR_WEIGHTS", env_path)
+    cfg = fast_config("sim")
+    cfg = dataclasses.replace(
+        cfg,
+        detector=dataclasses.replace(
+            cfg.detector, kind="yolov8n", weights=str(tmp_path / "config.pt")
+        ),
+    )
+    app = SystemApp(cfg, plugins=no_plugins())
+    await app.start()
+    try:
+        assert await wait_for(
+            lambda: app.snapshot()["components"]["detector"]["status"] == "degraded"
+        )
+        assert env_path in app.snapshot()["components"]["detector"]["detail"]
+    finally:
+        await app.stop()
+
+
+async def test_el_detector_no_se_cierra_con_una_inferencia_en_curso():
+    import threading
+
+    events: list[str] = []
+    entered = threading.Event()
+
+    class SlowDetector:
+        name = "lento"
+
+        def warmup(self, n: int = 5) -> None:
+            return None
+
+        def infer(self, frame):
+            events.append("infer-start")
+            entered.set()
+            time.sleep(0.8)
+            events.append("infer-end")
+            return []
+
+        def close(self) -> None:
+            events.append("close")
+
+    cfg = dataclasses.replace(fast_config("sim"), shutdown_timeout_s=0.2)
+    app = SystemApp(cfg, plugins=no_plugins(), detector=SlowDetector())
+    await app.start()
+    assert await asyncio.get_running_loop().run_in_executor(
+        None, entered.wait, 3.0
+    )
+    await app.stop()
+    await asyncio.sleep(1.0)
+    assert events.index("close") > events.index("infer-end"), events
+    assert events.count("infer-start") == 1, events

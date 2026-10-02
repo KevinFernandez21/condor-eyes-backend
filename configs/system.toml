@@ -63,6 +63,8 @@ fps = 15.0
 
 [profiles.laptop.detector]
 kind = "yolov8n"
+# Pesos (nunca se versionan). Prioridad: variable CONDOR_WEIGHTS > esta clave.
+weights = "weights/yolov8n.pt"
 config_path = "configs/surveillance.toml"
 
 [profiles.laptop.tag]
@@ -84,6 +86,8 @@ fps = 15.0
 
 [profiles.replay.detector]
 kind = "yolov8n"
+# Pesos (nunca se versionan). Prioridad: variable CONDOR_WEIGHTS > esta clave.
+weights = "weights/yolov8n.pt"
 config_path = "configs/surveillance.toml"
 
 [profiles.replay.tag]

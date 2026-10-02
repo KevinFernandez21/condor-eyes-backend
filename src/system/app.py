@@ -18,6 +18,8 @@ from __future__ import annotations
 import asyncio
 import logging
 import math
+import os
+import threading
 import time
 from collections.abc import Mapping
 from contextlib import suppress
@@ -112,6 +114,8 @@ class SystemApp:
         self._source_factory = source_factory
         self._detector: Detector | None = detector
         self._detector_injected = detector is not None
+        self._detector_lock = threading.Lock()  # infer en curso vs close
+        self._closing = False
         self._detector_state: dict[str, Any] = {
             "status": "starting",
             "detail": "",
@@ -299,17 +303,31 @@ class SystemApp:
             return MovingDetector()
         return self._build_yolo()
 
+    def _weights_path(self) -> str:
+        """Prioridad: ``CONDOR_WEIGHTS`` > ``[detector].weights`` > surveillance.toml."""
+        det = self.config.detector
+        env = os.environ.get("CONDOR_WEIGHTS", "").strip()
+        if env:
+            return env
+        if det.weights:
+            return det.weights
+        from surveillance.detector import load_surveillance_config
+
+        weights = load_surveillance_config(det.config_path).model
+        if not Path(weights).is_absolute():
+            weights = str(Path(det.config_path).resolve().parent.parent / weights)
+        return weights
+
     def _build_yolo(self) -> Detector:
         det = self.config.detector
-        weights = det.weights
-        if not weights:
-            from surveillance.detector import load_surveillance_config
-
-            weights = load_surveillance_config(det.config_path).model
-            if not Path(weights).is_absolute():
-                weights = str(Path(det.config_path).resolve().parent.parent / weights)
+        weights = self._weights_path()
         if not Path(weights).is_file():
-            raise FileNotFoundError(f"Pesos de YOLOv8n no encontrados: {weights}")
+            raise FileNotFoundError(
+                f"Pesos de YOLOv8n no encontrados: {weights}. Colóquelos en esa ruta, "
+                "o indique otra con la variable de entorno CONDOR_WEIGHTS o con "
+                "[detector].weights en configs/system.toml. Se obtienen del asset "
+                "oficial 'yolov8n.pt' de ultralytics; no se descarga nada automáticamente."
+            )
         from surveillance.detector import SurveillanceDetector, load_surveillance_config
 
         device = "0"
@@ -346,20 +364,34 @@ class SystemApp:
             logger.warning("Detector degradado: %s", state["detail"])
 
     def _close_detector(self) -> None:
-        detector, self._detector = self._detector, None
+        """Cierra el detector esperando a que termine la inferencia en curso."""
+        self._closing = True
+        with self._detector_lock:
+            detector, self._detector = self._detector, None
         if detector is not None:
             with suppress(Exception):
                 detector.close()
 
     def _process(self, stream_id: str, frame: Frame) -> list[Mapping[str, Any]] | None:
         """Inferencia del lado del pipeline: del frame solo salen detecciones."""
-        detector = self._detector
-        if detector is None:
+        if self._closing:
             return None
+        with self._detector_lock:
+            detector = self._detector
+            if detector is None or self._closing:
+                return None
+            try:
+                raw = detector.infer(frame.data)
+            except Exception as exc:  # noqa: BLE001 - un frame malo no tumba el pipeline
+                state = self._detector_state
+                state.update(
+                    status="degraded",
+                    detail=f"{type(exc).__name__}: {exc}",
+                    errors=state["errors"] + 1,
+                )
+                return None
         try:
-            detections: list[Mapping[str, Any]] = list(
-                _clean_detections(detector.infer(frame.data))
-            )
+            detections: list[Mapping[str, Any]] = list(_clean_detections(raw))
         except Exception as exc:  # noqa: BLE001 - un frame malo no tumba el pipeline
             state = self._detector_state
             state.update(
