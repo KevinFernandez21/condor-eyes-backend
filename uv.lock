@@ -661,6 +661,7 @@ version = "0.1.0"
 source = { virtual = "." }
 dependencies = [
     { name = "agentscope" },
+    { name = "fastapi" },
     { name = "onnx" },
     { name = "onnxruntime" },
     { name = "onnxslim" },
@@ -670,10 +671,12 @@ dependencies = [
     { name = "torchvision", version = "0.29.1", source = { registry = "https://pypi.org/simple" }, marker = "platform_machine != 'AMD64' and platform_machine != 'x86_64'" },
     { name = "torchvision", version = "0.29.1+cu130", source = { registry = "https://download.pytorch.org/whl/cu130" }, marker = "platform_machine == 'AMD64' or platform_machine == 'x86_64'" },
     { name = "ultralytics" },
+    { name = "uvicorn" },
 ]
 
 [package.dev-dependencies]
 dev = [
+    { name = "httpx" },
     { name = "mypy" },
     { name = "pytest" },
     { name = "pytest-asyncio" },
@@ -683,6 +686,7 @@ dev = [
 [package.metadata]
 requires-dist = [
     { name = "agentscope", specifier = ">=2.0.9" },
+    { name = "fastapi", specifier = ">=0.142.2" },
     { name = "onnx", specifier = ">=1.23.1" },
     { name = "onnxruntime", specifier = ">=1.30.0" },
     { name = "onnxslim", specifier = ">=0.1.97" },
@@ -692,10 +696,12 @@ requires-dist = [
     { name = "torchvision", marker = "platform_machine != 'AMD64' and platform_machine != 'x86_64'", specifier = ">=0.29.1" },
     { name = "torchvision", marker = "platform_machine == 'AMD64' or platform_machine == 'x86_64'", specifier = ">=0.29.1", index = "https://download.pytorch.org/whl/cu130" },
     { name = "ultralytics", specifier = ">=8.4.123" },
+    { name = "uvicorn", specifier = ">=0.54.0" },
 ]
 
 [package.metadata.requires-dev]
 dev = [
+    { name = "httpx", specifier = ">=0.28.1" },
     { name = "mypy", specifier = ">=2.3.1" },
     { name = "pytest", specifier = ">=9.1.1" },
     { name = "pytest-asyncio", specifier = ">=1.4.0" },
@@ -1081,6 +1087,23 @@ source = { registry = "https://pypi.org/simple" }
 sdist = { url = "https://files.pythonhosted.org/packages/e0/4d/f332313098c1de1b2d2ff91cf2674415cc7cddab2ca1b01ae29774bd5fdf/docstring_parser-0.18.0.tar.gz", hash = "sha256:292510982205c12b1248696f44959db3cdd1740237a968ea1e2e7a900eeb2015", size = 29341, upload-time = "2026-04-14T04:09:19.867Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/a7/5f/ed01f9a3cdffbd5a008556fc7b2a08ddb1cc6ace7effa7340604b1d16699/docstring_parser-0.18.0-py3-none-any.whl", hash = "sha256:b3fcbed555c47d8479be0796ef7e19c2670d428d72e96da63f3a40122860374b", size = 22484, upload-time = "2026-04-14T04:09:18.638Z" },
+]
+
+[[package]]
+name = "fastapi"
+version = "0.142.2"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "annotated-doc" },
+    { name = "opentelemetry-api" },
+    { name = "pydantic" },
+    { name = "starlette" },
+    { name = "typing-extensions" },
+    { name = "typing-inspection" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/56/4f/f7c30a73127e0a8bbffe788369b8359e530b01ae06e2757936fa35bc5e6d/fastapi-0.142.2.tar.gz", hash = "sha256:06366626f2e70576367714d9ab2fe8472e6c8456dba69b399f9f797ab5e92570", size = 466721, upload-time = "2026-09-30T09:51:11.277Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/a0/b6/78aaf9141fb46742928c113f3cf6ef2259d538cb02b604b7656c1dc9883c/fastapi-0.142.2-py3-none-any.whl", hash = "sha256:bd5f4d81f1e93a88bcd77caf4dfe3c2dbffc3805407a0007e9a114c18b3a670b", size = 144409, upload-time = "2026-09-30T09:51:09.8Z" },
 ]
 
 [[package]]
