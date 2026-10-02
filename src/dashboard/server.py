@@ -11,8 +11,8 @@ import asyncio
 import contextlib
 import hashlib
 import ipaddress
-import re
 import logging
+import re
 from collections.abc import AsyncIterator
 from pathlib import Path
 from typing import Any
