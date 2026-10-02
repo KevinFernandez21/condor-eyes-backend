@@ -1,0 +1,98 @@
+# Ejecutor local del sistema multiagente (issue #41). Documentación: docs/system-runner.md
+# Uso: uv run python scripts/run_system.py --profile sim|laptop|replay [--duration S]
+# Las rutas relativas se resuelven contra la raíz del repositorio.
+# Cualquier clave desconocida, número no finito (nan/inf) o `kind` fuera de catálogo
+# aborta el arranque con un error de configuración.
+
+[system]
+default_profile = "sim"
+heartbeat_interval_s = 2.0      # salud de roles y componentes en Topic.HEALTH
+fusion_interval_s = 1.0         # cada cuánto evalúa la fusión (publica solo cambios)
+shutdown_timeout_s = 5.0        # vaciado de colas y unión de hilos al detener
+queue_size = 1024               # cola por suscripción del hub
+history_size = 1000             # mensajes recientes retenidos por el hub (depuración)
+recent_limit = 50               # eventos/alertas recientes retenidos por los sumideros
+fusion_config = "configs/fusion.toml"
+
+# Zonas por franjas horizontales del encuadre ([x_min, x_max) como fracción de 0 a 1).
+[[zones]]
+zone_id = "lobby"
+restricted = false
+x_min = 0.0
+x_max = 0.5
+
+[[zones]]
+zone_id = "vault"
+restricted = true
+x_min = 0.5
+x_max = 1.0
+
+# Zonas permitidas por persona (la fusión las compara con la ubicación del tag).
+[permissions]
+person-sim-01 = ["lobby", "vault"]
+person-sim-02 = ["lobby"]
+
+# --- sim: sin hardware. Cámara falsa, tag, identidad y actuador simulados. ---
+[profiles.sim.camera]
+kind = "fake"
+stream_id = "cam-01"
+fps = 10.0
+
+[profiles.sim.detector]
+kind = "moving"                 # dos personas sintéticas; "fake" = FakeDetector estático
+
+[profiles.sim.tag]
+kind = "sim"
+interval_s = 1.0
+
+[profiles.sim.identity]
+kind = "sim"
+interval_s = 2.0
+
+[profiles.sim.actuator]
+kind = "sim"
+interval_s = 1.0
+
+# --- laptop: webcam + YOLOv8n + tag XIAO C6 (tagbridge) + actuador simulado. ---
+# Sin webcam, sin pesos o sin C6 el sistema sigue y lo muestra como "degraded".
+[profiles.laptop.camera]
+kind = "webcam"
+stream_id = "cam-01"
+device_index = 0
+fps = 15.0
+
+[profiles.laptop.detector]
+kind = "yolov8n"
+config_path = "configs/surveillance.toml"
+
+[profiles.laptop.tag]
+kind = "c6"
+
+[profiles.laptop.identity]
+kind = "none"
+
+[profiles.laptop.actuator]
+kind = "sim"
+interval_s = 1.0
+
+# --- replay: video grabado + JSONL de estimaciones de tag. ---
+[profiles.replay.camera]
+kind = "file"
+stream_id = "replay-01"
+path = "data/replay/clip.mp4"
+fps = 15.0
+
+[profiles.replay.detector]
+kind = "yolov8n"
+config_path = "configs/surveillance.toml"
+
+[profiles.replay.tag]
+kind = "replay"
+path = "data/replay/tags.jsonl"
+interval_s = 0.5
+
+[profiles.replay.identity]
+kind = "none"
+
+[profiles.replay.actuator]
+kind = "none"

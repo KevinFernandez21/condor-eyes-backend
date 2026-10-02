@@ -1,0 +1,104 @@
+"""CLI scripts/run_system.py: salida, códigos de error y apagado con SIGINT."""
+
+from __future__ import annotations
+
+import signal
+import subprocess
+import sys
+import threading
+from pathlib import Path
+
+import pytest
+
+from system.cli import main
+
+ROOT = Path(__file__).resolve().parents[1]
+SCRIPT = ROOT / "scripts" / "run_system.py"
+
+
+def run_script(*args: str, timeout: float = 60.0) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        [sys.executable, str(SCRIPT), *args],
+        capture_output=True,
+        text=True,
+        timeout=timeout,
+        check=False,
+        cwd=ROOT,
+    )
+
+
+def test_sim_duracion_imprime_resumen_y_sale_con_cero():
+    done = run_script("--profile", "sim", "--duration", "1.5")
+    assert done.returncode == 0, done.stderr
+    assert "perfil=sim" in done.stdout
+    assert "vision.detections" in done.stdout
+    for role in (
+        "ingest",
+        "inference",
+        "tracker",
+        "event",
+        "storage",
+        "comms",
+        "supervisor",
+    ):
+        assert role in done.stdout
+
+
+def test_perfil_invalido_sale_con_2():
+    done = run_script("--profile", "jetson", "--duration", "1")
+    assert done.returncode == 2
+    assert "perfil" in done.stderr.lower()
+
+
+def test_config_inexistente_sale_con_2(tmp_path):
+    done = run_script("--config", str(tmp_path / "x.toml"), "--duration", "1")
+    assert done.returncode == 2
+    assert "No se encontró" in done.stderr
+
+
+def test_duracion_negativa_se_rechaza():
+    done = run_script("--duration", "-3")
+    assert done.returncode == 2
+
+
+def test_main_en_proceso_devuelve_cero(capsys):
+    assert main(["--profile", "sim", "--duration", "0.5"]) == 0
+    assert "perfil=sim" in capsys.readouterr().out
+
+
+def test_sigint_apaga_limpio(capsys):
+    """Ctrl+C real (señal SIGINT al proceso) cierra todo y devuelve 0."""
+    timer = threading.Timer(1.0, lambda: signal.raise_signal(signal.SIGINT))
+    timer.start()
+    try:
+        code = main(["--profile", "sim"])
+    finally:
+        timer.cancel()
+    out = capsys.readouterr().out
+    assert code == 0
+    assert "Deteniendo" in out
+    leaked = [t.name for t in threading.enumerate() if t.name.startswith("video")]
+    assert leaked == []
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="CTRL_BREAK es de Windows")
+def test_ctrl_break_en_subproceso_windows():
+    proc = subprocess.Popen(
+        [sys.executable, str(SCRIPT), "--profile", "sim"],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        cwd=ROOT,
+        creationflags=subprocess.CREATE_NEW_PROCESS_GROUP,
+    )
+    try:
+        import time
+
+        time.sleep(4.0)
+        proc.send_signal(signal.CTRL_BREAK_EVENT)
+        out, err = proc.communicate(timeout=30)
+    finally:
+        if proc.poll() is None:
+            proc.kill()
+    assert proc.returncode == 0, err
+    assert "Deteniendo" in out
