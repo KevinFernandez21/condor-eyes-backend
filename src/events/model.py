@@ -45,6 +45,17 @@ class TrackObservation:
     # Lo aporta el agente de identidad/fusión; el detector de eventos no decide.
     authorized: bool = False
 
+    def __post_init__(self) -> None:
+        # El tracker real entrega np.int64/np.float32; el bus solo admite primitivas JSON.
+        for name, cast in (
+            ("track_id", int),
+            ("t", float),
+            ("x", float),
+            ("y", float),
+            ("authorized", bool),
+        ):
+            object.__setattr__(self, name, cast(getattr(self, name)))
+
 
 @dataclass(frozen=True, slots=True)
 class Zone:
@@ -81,6 +92,18 @@ class EventPolicy:
     authorized: AuthorizedPolicy = AuthorizedPolicy.DOWNGRADE
 
 
+def _plain(value: Any) -> Any:
+    """Convierte escalares numpy (`.item()`) y colecciones a primitivas JSON."""
+    if isinstance(value, Mapping):
+        return {str(k): _plain(v) for k, v in value.items()}
+    if isinstance(value, list | tuple):
+        return [_plain(v) for v in value]
+    item = getattr(value, "item", None)
+    if callable(item) and hasattr(value, "dtype"):
+        return item()
+    return value
+
+
 @dataclass(frozen=True, slots=True)
 class Event:
     """Evento con evidencia; solo metadata serializable, nunca frames."""
@@ -100,13 +123,13 @@ class Event:
         return {
             "type": self.type.value,
             "zone": self.zone,
-            "track_ids": list(self.track_ids),
-            "start_t": self.start_t,
-            "detect_t": self.detect_t,
-            "confidence": round(self.confidence, 4),
+            "track_ids": [int(i) for i in self.track_ids],
+            "start_t": float(self.start_t),
+            "detect_t": float(self.detect_t),
+            "confidence": round(float(self.confidence), 4),
             "severity": self.severity.value,
-            "authorized": self.authorized,
-            "evidence": dict(self.evidence),
+            "authorized": bool(self.authorized),
+            "evidence": _plain(self.evidence),
         }
 
     def to_envelope(self, source: str = "event") -> MetadataEnvelope:
