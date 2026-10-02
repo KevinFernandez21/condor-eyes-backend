@@ -117,3 +117,43 @@ def test_seq_is_newer_handles_wraparound():
     assert seq_is_newer(0, 65535)
     assert seq_is_newer(5, 65530)
     assert not seq_is_newer(65530, 5)
+
+
+def test_recursion_error_in_json_is_reported_as_protocol_error(monkeypatch):
+    import actuation.protocol as proto
+
+    def boom(_text):
+        raise RecursionError("anidamiento excesivo")
+
+    monkeypatch.setattr(proto.json, "loads", boom)
+    frame = _frame(b'{"cmd":"hb","seq":1}')
+    with pytest.raises(ProtocolError):
+        decode_command(frame)
+    with pytest.raises(ProtocolError):
+        decode_ack(frame)
+
+
+def test_deeply_nested_or_oversized_frames_are_rejected():
+    body = b"[" * 100000
+    frame = _frame(body)
+    with pytest.raises(ProtocolError):
+        decode_command(frame)
+    with pytest.raises(ProtocolError):
+        decode_ack(frame)
+
+
+def test_ack_last_seq_roundtrip_and_optional():
+    with_last = Ack(7, AckStatus.STALE, NodeState.IDLE, 0.0, 0.0, 10, last_seq=500)
+    assert decode_ack(encode_ack(with_last)) == with_last
+    without = Ack(7, AckStatus.OK, NodeState.IDLE, 0.0, 0.0, 10)
+    assert decode_ack(encode_ack(without)).last_seq is None
+    with pytest.raises(ValueError):
+        Ack(7, AckStatus.OK, NodeState.IDLE, 0.0, 0.0, 10, last_seq=70000)
+
+
+def test_ack_node_ms_must_fit_uint32():
+    with pytest.raises(ValueError):
+        Ack(1, AckStatus.OK, NodeState.IDLE, 0.0, 0.0, -1)
+    with pytest.raises(ValueError):
+        Ack(1, AckStatus.OK, NodeState.IDLE, 0.0, 0.0, 2**32)
+    Ack(1, AckStatus.OK, NodeState.IDLE, 0.0, 0.0, 2**32 - 1)

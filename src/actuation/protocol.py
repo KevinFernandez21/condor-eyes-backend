@@ -25,6 +25,8 @@ from enum import StrEnum
 from typing import Any
 
 SEQ_MODULUS = 1 << 16
+MS_MODULUS = 1 << 32  # node_ms es uint32 y da la vuelta a los ~49,7 días
+MAX_FRAME_BYTES = 256  # una trama válida es mucho menor; el resto es basura
 _SEQ_HALF = 1 << 15
 
 
@@ -135,9 +137,16 @@ class Ack:
     pan_deg: float
     tilt_deg: float
     node_ms: int
+    # Último seq aceptado por el nodo (None si aún no aceptó ninguno). Obligatorio
+    # en los acks ``stale``: permite al host reiniciado re-sincronizar su secuencia.
+    last_seq: int | None = None
 
     def __post_init__(self) -> None:
         _check_seq(self.seq)
+        if self.last_seq is not None:
+            _check_seq(self.last_seq)
+        if not 0 <= self.node_ms < MS_MODULUS:
+            raise ValueError("node_ms debe caber en uint32")
 
 
 def _r(value: float) -> float:
@@ -150,6 +159,8 @@ def _seal(body: dict[str, Any]) -> bytes:
 
 
 def _unseal(frame: bytes) -> dict[str, Any]:
+    if len(frame) > MAX_FRAME_BYTES:
+        raise ProtocolError("trama demasiado larga")
     body, sep, tail = frame.rpartition(b"*")
     if not sep:
         raise ProtocolError("trama sin separador de CRC")
@@ -161,7 +172,7 @@ def _unseal(frame: bytes) -> dict[str, Any]:
         raise ProtocolError("CRC inválido")
     try:
         data = json.loads(body.decode("ascii"))
-    except (UnicodeDecodeError, ValueError) as exc:
+    except (UnicodeDecodeError, ValueError, RecursionError) as exc:
         raise ProtocolError("cuerpo JSON inválido") from exc
     if not isinstance(data, dict):
         raise ProtocolError("el cuerpo debe ser un objeto JSON")
@@ -231,16 +242,17 @@ def decode_command(frame: bytes) -> Command:
 
 def encode_ack(ack: Ack) -> bytes:
     """Serializa un ack a trama (sin el ``\\n`` final)."""
-    return _seal(
-        {
-            "ack": ack.seq,
-            "st": ack.status.value,
-            "state": ack.state.value,
-            "pan": _r(ack.pan_deg),
-            "tilt": _r(ack.tilt_deg),
-            "ms": ack.node_ms,
-        }
-    )
+    body: dict[str, Any] = {
+        "ack": ack.seq,
+        "st": ack.status.value,
+        "state": ack.state.value,
+        "pan": _r(ack.pan_deg),
+        "tilt": _r(ack.tilt_deg),
+        "ms": ack.node_ms,
+    }
+    if ack.last_seq is not None:
+        body["last"] = ack.last_seq
+    return _seal(body)
 
 
 def decode_ack(frame: bytes) -> Ack:
@@ -254,6 +266,7 @@ def decode_ack(frame: bytes) -> Ack:
             pan_deg=_num(data, "pan"),
             tilt_deg=_num(data, "tilt"),
             node_ms=_int(data, "ms"),
+            last_seq=_int(data, "last") if "last" in data else None,
         )
     except ProtocolError:
         raise

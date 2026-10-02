@@ -45,6 +45,7 @@ class SerialTransport:
             ) from exc
         self._max = max_frame_bytes
         self._buffer = bytearray()
+        self._discarding = False
         # timeout=0: lecturas no bloqueantes; write_timeout evita colgar el lazo.
         self._port: Any = serial.Serial(port, baudrate, timeout=0, write_timeout=0.1)
 
@@ -67,10 +68,18 @@ class SerialTransport:
         while (idx := self._buffer.find(b"\n")) >= 0:
             line = bytes(self._buffer[:idx]).strip()
             del self._buffer[: idx + 1]
+            if self._discarding:  # cola de una línea que ya desbordó el límite
+                self._discarding = False
+                continue
+            if len(line) > self._max:  # línea demasiado larga: basura, se descarta
+                continue
             if line:
                 frames.append(line)
-        if len(self._buffer) > self._max:  # basura sin salto de línea: descartar
+        if len(self._buffer) > self._max:
+            # Basura sin salto de línea: descartar y seguir ignorando hasta el
+            # próximo salto de línea para que su cola no parezca una trama nueva.
             self._buffer.clear()
+            self._discarding = True
         return frames
 
     def close(self) -> None:
