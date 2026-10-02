@@ -70,6 +70,40 @@ tienen una sola escena cada uno, así que las métricas tienen mucha varianza y 
 predicen el rendimiento en video real. Sirve para validar el flujo de punta a
 punta, no como modelo final.
 
+### Ampliación v2: Open Images V7
+
+Para pasar de un modelo que solo vio datos sintéticos a uno con imágenes reales se
+añadió un subconjunto de **Open Images V7** (anotaciones CC BY 4.0; imágenes listadas
+por Google como CC BY 2.0):
+
+- `weapon` = cajas de `Handgun`, `Rifle` y `Shotgun`, sin dibujos (`IsDepiction`) ni
+  cajas de grupo. Las imágenes con cuchillos o con la clase genérica `Weapon` sin arma
+  de fuego se excluyen.
+- **Negativos difíciles:** imágenes con teléfono, paraguas, herramientas, linterna, mando
+  o cámara, sin ninguna arma. Llevan sus personas y ninguna caja `weapon`.
+- `person` = `Person`, `Man`, `Woman`, `Boy`, `Girl`, sin duplicados. Open Images **no**
+  etiqueta a todas las personas, así que en train y val se completan con YOLOv8n COCO
+  (conf ≥ 0,5, solo si no solapan con una ya anotada). Test y negativos se dejan con las
+  etiquetas originales.
+- Se respetan los splits oficiales:
+
+| Split | Con arma (cajas) | Negativos |
+|---|---|---|
+| train | 2194 (3394) | 1499 |
+| val | 92 (180) | 300 |
+| test | 320 (581) | 500, aparte, en `images/negatives` |
+
+```bash
+# CSVs de cajas filtrados por clase (se leen en streaming; el de train pesa 2,2 GB)
+uv run python scripts/firearm.py openimages
+uv run python scripts/firearm.py train --data datasets/firearm_v2.yaml --base weights/yolov8n.pt --epochs 60 --batch 16 --workers 2 --patience 20 --name yolov8n_firearm_v2
+```
+
+`openimages` descarga solo las imágenes elegidas desde el bucket público de Open Images
+en S3, las reduce a 960 px y escribe `datasets/firearm_v2.yaml`: train y val de
+Simuletic **y** de Open Images. El test de Simuletic (Scene6) sigue siendo un held-out
+que ninguno de los dos modelos vio.
+
 ### CCTV-Gun (bloqueado)
 
 [CCTV-Gun](https://github.com/srikarym/CCTV-Gun) era el dataset recomendado por el
@@ -153,6 +187,7 @@ comercial hay que decidir una de estas opciones:
 
 | Fuente | Qué es | Licencia / uso | Estado |
 |---|---|---|---|
+| Open Images V7 (subconjunto armas + negativos) | 2606 imágenes con arma, 2299 negativos | Anotaciones CC BY 4.0; imágenes CC BY 2.0 según Google (verificar por imagen antes de redistribuir) | Verificado (términos de Open Images) |
 | Simuletic CCTV Weapon (Kaggle, v4) | 141 imágenes sintéticas, etiquetas YOLO | CC BY-SA 4.0 según Kaggle; la descripción del dataset dice CC BY 4.0. Se toma la más restrictiva (BY-SA): atribuir a Simuletic y compartir derivados del dataset con la misma licencia | Verificado (metadatos de Kaggle) |
 | CCTV-Gun (anotaciones y scripts) | Benchmark de Yellapragada et al., 2023 | Repo bajo Apache-2.0 | Verificado (licencia del repo en GitHub) |
 | MGD (Monash Gun Dataset) | Lim et al., 2021 | Términos de la fuente original | **Por verificar antes de descargar** |
