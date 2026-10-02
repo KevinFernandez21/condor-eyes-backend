@@ -269,12 +269,27 @@ _OUTCOME_LABEL = {
     "inconclusive": "No concluyente",
     "corroborated": "Corroborado",
     "not_restricted": "Zona sin restricción",
+    "uncorroborated": "No corroborado",
 }
 _OUTCOME_SEVERITY = {
     "alert": "high",
     "inconclusive": "medium",
+    "uncorroborated": "medium",
     "corroborated": "low",
     "not_restricted": "low",
+}
+_KIND_LABEL = {
+    "track": "Seguimiento",
+    "identity": "Identidad",
+    "reid": "Re-identificación",
+    "location": "Localización",
+    "permission": "Permiso",
+}
+_ROLE_LABEL = {
+    "supports": "Respalda",
+    "conflicts": "Contradice",
+    "stale": "Caducada",
+    "context": "Contexto",
 }
 _REASON_LABEL = {
     "evidence_consistent": "Evidencia consistente",
@@ -310,14 +325,25 @@ def format_alert(envelope: Mapping[str, Any]) -> dict[str, Any]:
         {"code": str(code), "label": _REASON_LABEL.get(str(code), str(code))}
         for code in (p.get("reason_codes") or [])
     ]
-    evidence = [dict(e) for e in (p.get("evidence") or []) if isinstance(e, Mapping)]
+    evidence = [
+        {
+            **e,
+            "kind_label": _KIND_LABEL.get(str(e.get("kind")), str(e.get("kind", "—"))),
+            "role_label": _ROLE_LABEL.get(str(e.get("role")), str(e.get("role", "—"))),
+        }
+        for e in (p.get("evidence") or [])
+        if isinstance(e, Mapping)
+    ]
     return {
         "decision_id": p.get("decision_id"),
         "event_id": envelope.get("event_id"),
         "correlation_id": envelope.get("correlation_id"),
         "evaluated_at": p.get("evaluated_at") or envelope.get("created_at"),
         "outcome": outcome,
-        "outcome_label": _OUTCOME_LABEL.get(outcome, outcome or "Sin resultado"),
+        "outcome_raw": outcome,
+        "outcome_label": _OUTCOME_LABEL.get(
+            outcome, "Resultado desconocido" if outcome else "Sin resultado"
+        ),
         "severity": _OUTCOME_SEVERITY.get(outcome, "info"),
         "confidence_pct": round(float(confidence) * 100)
         if isinstance(confidence, (int, float)) and not isinstance(confidence, bool)

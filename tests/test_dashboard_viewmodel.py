@@ -342,3 +342,29 @@ def test_health_strip_without_api_is_offline():
     strip = vm.health_strip(None, [], connected=False)
     assert strip["status"] == "offline"
     assert strip["api_connected"] is False
+
+
+@pytest.mark.parametrize(
+    "outcome", ["corroborated", "alert", "inconclusive", "not_restricted", "uncorroborated"]
+)
+def test_every_outcome_has_spanish_label_and_keeps_raw_value(outcome):
+    alert = vm.format_alert(decision_env(outcome=outcome))
+    assert alert["outcome_raw"] == outcome
+    assert alert["outcome_label"] != outcome
+    assert alert["outcome_label"][0].isupper()
+
+
+def test_unknown_outcome_label_is_spanish_and_raw_kept():
+    alert = vm.format_alert(decision_env(outcome="weird"))
+    assert alert["outcome_label"] == "Resultado desconocido"
+    assert alert["outcome_raw"] == "weird"
+
+
+def test_evidence_entries_get_spanish_kind_and_role_labels():
+    alert = vm.format_alert(
+        decision_env(evidence=[{"evidence_id": "e", "kind": "location", "role": "supports"}])
+    )
+    ev = alert["evidence"][0]
+    assert ev["kind_label"] == "Localización" and ev["role_label"] == "Respalda"
+    odd = vm.format_alert(decision_env(evidence=[{"evidence_id": "e", "kind": "x"}]))
+    assert odd["evidence"][0]["kind_label"] == "x"
