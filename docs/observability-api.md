@@ -13,8 +13,13 @@ API **de solo lectura** que muestra qué hace el sistema multiagente: agentes, t
 ## Seguridad
 
 - Bind por defecto: `127.0.0.1`. Un host no loopback **sin token** lanza `ConfigurationError` al construir el manejador/app (la API se niega a arrancar).
-- Token: cabecera `Authorization: Bearer <token>` o `X-API-Token: <token>`. En el WebSocket también `?token=<token>` (los navegadores no pueden poner cabeceras). En HTTP no se acepta por query (acaba en logs). Comparación en tiempo constante; sin token válido: 401 / cierre `1008`.
-- Sin comprobación de `Origin` en el WS: en loopback sin token cualquier página local podría leer metadata. Usa token si el dashboard está en otro origen.
+- Token (comparación en tiempo constante sobre bytes UTF-8; un token con caracteres no ASCII nunca provoca error 500): cabecera `Authorization: Bearer <token>` o `X-API-Token: <token>`. Sin token válido: 401 en HTTP, cierre `1008` en el WS. En HTTP no se acepta por query.
+- Token en el WebSocket, en orden de preferencia:
+  1. Cabecera (`Authorization` / `X-API-Token`) para clientes que no son navegador.
+  2. **Subprotocolo** `Sec-WebSocket-Protocol: token.<valor>` (navegadores: `new WebSocket(url, ["token.<valor>"])`; el servidor lo devuelve en el handshake). No aparece en la URL.
+  3. `?token=<valor>`: **puede quedar en logs de acceso, historial y proxies**; solo para pruebas locales.
+- **Origin del WebSocket**: si la petición trae `Origin` y no está permitido, se cierra con `1008` antes de aceptar (evita el secuestro entre sitios, CSWSH, en el bind local sin token). Sin cabecera `Origin` (clientes que no son navegador) se permite. Por defecto se permiten `http(s)://localhost`, `127.0.0.1`, `[::1]` y el host de servicio, en el puerto en que se sirve la API. Se configura con `allowed_origins=[...]` (reemplaza la lista por defecto; p. ej. el origen del dashboard).
+- Con token configurado, `/docs`, `/redoc` y `/openapi.json` se desactivan (404).
 
 ## Adaptador `SystemView`
 
@@ -34,7 +39,7 @@ class RuntimeProbe(Protocol):                 # lo que TapSystemView pide al run
     def queue_depths(self) -> Mapping[str, int]: ...   # AgentRuntime.queue_depths()
 ```
 
-`create_app(view, *, token=None, host="127.0.0.1", ws_queue_size=256)` devuelve la app FastAPI. `ObservabilityCommsHandler(hub, host, port, token, sink=None)` crea tap + vista + app + servidor; llamar `bind_runtime(runtime)` tras crear el `AgentRuntime`.
+`create_app(view, *, token=None, host="127.0.0.1", ws_queue_size=256, allowed_origins=None)` devuelve la app FastAPI. `ObservabilityCommsHandler(hub, host, port, token, sink=None)` crea tap + vista + app + servidor; llamar `bind_runtime(runtime)` tras crear el `AgentRuntime`.
 
 ## HTTP
 
@@ -54,7 +59,7 @@ Todos `GET`, JSON. `limit` 1..500 (defecto 50); más nuevo primero.
 
 ## WebSocket `/ws`
 
-Query: `topics=events,system.health` (coma; defecto: todos; tópico inválido: cierre `1008`), `stream_id=cam-1`, `token=...`.
+Query: `topics=events,system.health` (coma; defecto: todos; tópico inválido: cierre `1008`), `stream_id=cam-1`, `token=...` (ver Seguridad; preferir cabecera o subprotocolo).
 
 Mensajes servidor → cliente (lo que envíe el cliente se ignora):
 
