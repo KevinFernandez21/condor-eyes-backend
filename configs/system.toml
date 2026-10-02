@@ -14,6 +14,16 @@ history_size = 1000             # mensajes recientes retenidos por el hub (depur
 recent_limit = 50               # eventos/alertas recientes retenidos por los sumideros
 fusion_config = "configs/fusion.toml"
 
+# API de observabilidad de solo lectura (#42). Se activa con --api (no hay token aquí:
+# usar --token o CONDOR_API_TOKEN). Bind 127.0.0.1; otro host exige token.
+# allowed_origins: páginas web autorizadas a abrir el WebSocket (CSWSH). Debe incluir
+# el origen donde se sirve el dashboard (#43): por defecto http://127.0.0.1:8080 y
+# http://localhost:8080. Reemplaza la lista por defecto de la API.
+[api]
+host = "127.0.0.1"
+port = 8000
+allowed_origins = ["http://127.0.0.1:8080", "http://localhost:8080"]
+
 # Zonas por franjas horizontales del encuadre ([x_min, x_max) como fracción de 0 a 1).
 [[zones]]
 zone_id = "lobby"

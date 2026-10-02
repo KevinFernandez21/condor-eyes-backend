@@ -69,7 +69,7 @@ reinicios del supervisor).
 | Falta | Efecto |
 |---|---|
 | Webcam / video | `camera: degraded` (el pipeline reintenta con backoff) |
-| Pesos / `ultralytics` | `detector: degraded` (el mensaje indica ruta, `CONDOR_WEIGHTS` y el asset oficial; nunca se descarga nada); detecciones vacías, el resto sigue |
+| Pesos / `ultralytics` (ruta: `CONDOR_WEIGHTS` > `[detector].weights`, por defecto `weights/yolov8n.pt`; nunca se versionan) | `detector: degraded` (el mensaje indica ruta, `CONDOR_WEIGHTS` y el asset oficial; nunca se descarga nada); detecciones vacías, el resto sigue |
 | C6 o `tagbridge` | `location: degraded`; se publica `status: "unknown"` (nunca se inventa zona) |
 | JSONL de replay | igual que sin C6 |
 | Plugin (`location`, `identity`, `actuation`, `tagbridge`) | `plugin: "not_installed"`; se usa el simulador |
@@ -98,39 +98,51 @@ Imitan los payloads de los módulos reales (ver `git show origin/<rama>:docs/...
 `Topic.LOCATION` cuando #32 esté en `main`. Todos
 llevan `"simulated": true`.
 
-## API estable para otros componentes (observabilidad #42, dashboard)
+## API de observabilidad (#42) y dashboard (#43)
+
+```bash
+uv run python scripts/run_system.py --profile sim --api                 # http://127.0.0.1:8000
+uv run python scripts/run_system.py --profile sim --api --api-port 8001
+uv run python scripts/run_system.py --profile sim --api --api-host 0.0.0.0 --token <secreto>
+```
+
+- Se sirve como parte del ciclo de vida del rol `comms` (`RunnerCommsHandler`):
+  arranca el `BusTap` (siempre) y, con `--api`, uvicorn (importación diferida).
+- Host `127.0.0.1` por defecto. Cualquier otro host **exige token**
+  (`--token` o `CONDOR_API_TOKEN`); sin él el comando sale con código 2. El token
+  nunca vive en `configs/system.toml`.
+- `[api].allowed_origins` en `configs/system.toml` lista los orígenes web que
+  pueden abrir el WebSocket (anti-CSWSH). Por defecto el dashboard en
+  `http://127.0.0.1:8080` y `http://localhost:8080`; reemplaza la lista por
+  defecto de la API. Si el dashboard se sirve desde otro origen, añádalo ahí.
+- Rutas (ver `docs/observability-api.md`): `/health`, `/agents`, `/topics`,
+  `/events`, `/decisions`, `/ws`. `/agents` incluye, además de los roles, una
+  entrada por componente del ejecutor con `role: "component"`, `name:
+  "component/<nombre>"` y `state` = estado del componente (`ok`, `simulated`,
+  `degraded`, ...; `last_error` lleva el detalle si está degradado).
+- Estadísticas por tópico: **solo** el `BusTap` (el hub es un `InMemoryHub`
+  sin contadores propios).
+
+### API Python para otros componentes
 
 ```python
 import sys; sys.path.insert(0, "src")
 from system import SystemApp, load_system_config
 
-app = SystemApp(load_system_config(None, "sim"))
+app = SystemApp(load_system_config(None, "sim"), api_token=None)
 await app.start()           # o: await app.run(duration=10, stop_event=ev)
-app.runtime                 # AgentRuntime (health(), emit(), handler(role), ...)
-app.hub                     # InstrumentedHub, subclase de InMemoryHub (history, stats, topic_stats())
-app.snapshot()              # dict JSON estricto, ver abajo
+app.runtime                 # AgentRuntime
+app.hub                     # InMemoryHub (history, stats)
+app.tap                     # BusTap
+app.view                    # SystemView (TapSystemView): agents(), topics(), events(), decisions(), listen()
+app.api_url                 # "http://127.0.0.1:8000" o None
+app.snapshot()              # {profile, running, uptime_s, components, pipeline, api}
 await app.stop()            # idempotente
 ```
 
-`SystemApp(config, *, hub=None, plugins=None, source_factory=None, detector=None)`
-admite inyectar hub, registro de plugins, fábrica de fuentes y detector (tests).
-
-`snapshot()`:
-
-```text
-profile, running, uptime_s,
-agents:     {"<rol>" | "<rol>/<instancia>": {role, instance, state, processed,
-             duplicates, failures, retries, last_error}}
-topics:     {"<topic>": {published, last_at}}      # los 7 Topic, siempre presentes
-hub:        {published, dropped, overflow}
-components: {camera, detector, fusion, location, identity, actuation, tagbridge:
-             {status, detail, ...; plugin: installed|not_installed; kind}}
-pipeline:   {running, streams: {<id>: StreamHealth}}
-recent:     {events_stored, alerts_sent}
-```
-
-Estados de componente: `ok`, `simulated`, `starting`, `degraded`, `disabled`,
-`not_used`, `stopped`.
+`SystemApp(config, *, hub=None, plugins=None, source_factory=None, detector=None,
+api_token=None)`. Estados de componente: `ok`, `simulated`, `starting`,
+`degraded`, `disabled`, `not_used`, `stopped`.
 
 ## Parada limpia
 

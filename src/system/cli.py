@@ -5,11 +5,15 @@ from __future__ import annotations
 import argparse
 import asyncio
 import logging
+import os
 import signal
 import sys
 from collections.abc import Sequence
+from dataclasses import replace
 from pathlib import Path
 from typing import Any
+
+from comms.api import ConfigurationError, check_bind
 
 from .app import SystemApp
 from .config import DEFAULT_CONFIG_PATH, ConfigError, load_system_config
@@ -47,6 +51,20 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
         help="segundos a ejecutar; sin valor corre hasta Ctrl+C",
     )
+    parser.add_argument(
+        "--api",
+        action="store_true",
+        help="sirve la API de observabilidad (solo lectura) de #42",
+    )
+    parser.add_argument("--api-host", default=None, help="por defecto el de [api].host")
+    parser.add_argument(
+        "--api-port", type=int, default=None, help="por defecto el de [api].port"
+    )
+    parser.add_argument(
+        "--token",
+        default=None,
+        help="token de la API (o variable CONDOR_API_TOKEN); obligatorio fuera de loopback",
+    )
     parser.add_argument("--config", type=Path, default=DEFAULT_CONFIG_PATH)
     parser.add_argument("--verbose", action="store_true", help="logs DEBUG")
     parser.add_argument(
@@ -55,20 +73,22 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def format_summary(snapshot: dict[str, Any]) -> str:
+def format_summary(summary: dict[str, Any]) -> str:
     """Resumen legible: agentes, mensajes por tópico y estado de componentes."""
-    lines = [f"perfil={snapshot['profile']} uptime={snapshot['uptime_s']}s"]
+    lines = [f"perfil={summary['profile']} uptime={summary['uptime_s']}s"]
     lines.append("agentes:")
-    for name, agent in snapshot["agents"].items():
+    for agent in summary["agents"]:
+        if agent["role"] == "component":
+            continue
         lines.append(
-            f"  {name:<12} {agent['state']:<8} procesados={agent['processed']} "
+            f"  {agent['name']:<12} {agent['state']:<8} procesados={agent['processed']} "
             f"fallos={agent['failures']}"
         )
     lines.append("mensajes por topic:")
-    for topic, stat in snapshot["topics"].items():
-        lines.append(f"  {topic:<20} {stat['published']}")
+    for stat in summary["topics"]:
+        lines.append(f"  {stat['topic']:<20} {stat['count']}")
     lines.append("componentes:")
-    for name, comp in snapshot["components"].items():
+    for name, comp in summary["components"].items():
         plugin = f" plugin={comp['plugin']}" if "plugin" in comp else ""
         lines.append(
             f"  {name:<10} {comp['status']:<10}{plugin} {comp.get('detail', '')}"
@@ -98,13 +118,19 @@ async def _run(app: SystemApp, duration: float | None) -> dict[str, Any]:
             f"Sistema en marcha (perfil {app.config.profile}). Ctrl+C para detener.",
             flush=True,
         )
+        if app.api_url:
+            print(f"API de observabilidad: {app.api_url}", flush=True)
         waiter = asyncio.ensure_future(stop.wait())
         try:
             await asyncio.wait({waiter}, timeout=duration)
         finally:
             waiter.cancel()
         print("Deteniendo...", flush=True)
-        last = app.snapshot()
+        last = {
+            **app.snapshot(),
+            "agents": app.view.agents(),
+            "topics": app.view.topics(),
+        }
     finally:
         await app.stop()
         for sig, handler in previous.items():
@@ -123,7 +149,24 @@ def main(argv: Sequence[str] | None = None) -> int:
     except ConfigError as exc:
         print(f"Error de configuración (perfil/archivo): {exc}", file=sys.stderr)
         return EXIT_CONFIG
-    app = SystemApp(config)
+    token = args.token or os.environ.get("CONDOR_API_TOKEN") or None
+    if args.token and not args.api:
+        print("--token solo tiene sentido con --api.", file=sys.stderr)
+        return EXIT_CONFIG
+    if args.api:
+        api = replace(
+            config.api,
+            enabled=True,
+            host=args.api_host or config.api.host,
+            port=config.api.port if args.api_port is None else args.api_port,
+        )
+        config = replace(config, api=api)
+        try:
+            check_bind(api.host, token)
+        except ConfigurationError as exc:
+            print(f"Error de configuración de la API: {exc}", file=sys.stderr)
+            return EXIT_CONFIG
+    app = SystemApp(config, api_token=token)
     try:
         snapshot = asyncio.run(_run(app, args.duration))
     except Exception as exc:

@@ -69,6 +69,19 @@ class ActuatorConfig:
     interval_s: float = 1.0
 
 
+DEFAULT_ORIGINS = ("http://127.0.0.1:8080", "http://localhost:8080")
+
+
+@dataclass(frozen=True, slots=True)
+class ApiConfig:
+    """API de observabilidad (#42). El token nunca vive en el archivo (CLI/entorno)."""
+
+    enabled: bool = False
+    host: str = "127.0.0.1"
+    port: int = 8000
+    allowed_origins: tuple[str, ...] = DEFAULT_ORIGINS
+
+
 @dataclass(frozen=True, slots=True)
 class ZoneConfig:
     """Zona rectangular en fracciones horizontales del encuadre ([x_min, x_max))."""
@@ -107,6 +120,7 @@ class SystemConfig:
     tag: TagConfig = field(default_factory=TagConfig)
     identity: IdentityConfig = field(default_factory=IdentityConfig)
     actuator: ActuatorConfig = field(default_factory=ActuatorConfig)
+    api: ApiConfig = field(default_factory=ApiConfig)
     zones: tuple[ZoneConfig, ...] = ()
     permissions: Mapping[str, tuple[str, ...]] = field(default_factory=dict)
 
@@ -133,6 +147,7 @@ _MAXIMUM = {
     "fps": 240.0,
     "interval_s": 3600.0,
     "device_index": 64,
+    "port": 65535,
 }
 _KINDS = {
     "camera": CAMERA_KINDS,
@@ -198,6 +213,35 @@ def _build(cls: type, section: str, table: Mapping[str, Any]) -> Any:
             f"[{section}].kind inválido: {kind!r} (permitidos: {', '.join(kinds)})"
         )
     return cls(**values)
+
+
+def _api(raw: Any) -> ApiConfig:
+    if not isinstance(raw, Mapping):
+        raise ConfigError("[api] debe ser una tabla")
+    table = dict(raw)
+    origins = table.pop("allowed_origins", None)
+    scalars = {k: v for k, v in table.items()}
+    unknown = sorted(set(scalars) - {"enabled", "host", "port"})
+    if unknown:
+        raise ConfigError(f"Claves desconocidas en [api]: {unknown}")
+    values: dict[str, Any] = {
+        "enabled": _check_value("api", "enabled", scalars.get("enabled", False), bool),
+        "host": _check_value("api", "host", scalars.get("host", "127.0.0.1"), str),
+        "port": _check_value("api", "port", scalars.get("port", 8000), int),
+    }
+    if values["port"] < 0:
+        raise ConfigError("[api].port inválido: el puerto no puede ser negativo")
+    if not values["host"].strip():
+        raise ConfigError("[api].host no puede estar vacío")
+    if origins is None:
+        values["allowed_origins"] = DEFAULT_ORIGINS
+    else:
+        if not isinstance(origins, list):
+            raise ConfigError("[api].allowed_origins debe ser una lista de orígenes")
+        if not all(isinstance(o, str) and o.strip() for o in origins):
+            raise ConfigError("[api].allowed_origins debe contener solo texto no vacío")
+        values["allowed_origins"] = tuple(origins)
+    return ApiConfig(**values)
 
 
 def _zones(raw: Any) -> tuple[ZoneConfig, ...]:
@@ -266,7 +310,9 @@ def load_system_config(
     except tomllib.TOMLDecodeError as exc:
         raise ConfigError(f"TOML inválido en {config_path}: {exc}") from exc
 
-    unknown_top = sorted(set(raw) - {"system", "zones", "permissions", "profiles"})
+    unknown_top = sorted(
+        set(raw) - {"system", "zones", "permissions", "profiles", "api"}
+    )
     if unknown_top:
         raise ConfigError(f"Secciones desconocidas: {unknown_top}")
 
@@ -306,6 +352,7 @@ def load_system_config(
         history_size=system.history_size,
         recent_limit=system.recent_limit,
         fusion_config=_resolve(base, system.fusion_config),
+        api=_api(raw.get("api", {})),
         zones=_zones(raw.get("zones", [])),
         permissions=_permissions(raw.get("permissions", {})),
         **sections,

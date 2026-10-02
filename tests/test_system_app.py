@@ -31,7 +31,7 @@ async def wait_for(condition, timeout: float = 5.0) -> bool:
 
 
 def topic_count(app: SystemApp, topic: Topic) -> int:
-    return app.snapshot()["topics"][topic.value]["published"]
+    return next(t["count"] for t in app.view.topics() if t["topic"] == topic.value)
 
 
 def no_plugins() -> PluginRegistry:
@@ -68,10 +68,11 @@ async def test_sim_corre_los_siete_roles_y_publica_en_todos_los_topics():
                     Topic.HEALTH,
                 )
             )
-        ), app.snapshot()["topics"]
+        ), app.view.topics()
         snap = app.snapshot()
-        assert ROLES <= {name.split("/")[0] for name in snap["agents"]}
-        assert all(a["state"] == "running" for a in snap["agents"].values())
+        agents = [a for a in app.view.agents() if a["role"] != "component"]
+        assert ROLES <= {a["role"] for a in agents}
+        assert all(a["state"] == "running" for a in agents)
         assert snap["profile"] == "sim" and snap["running"] is True
     finally:
         await app.stop()
@@ -110,18 +111,11 @@ async def test_snapshot_es_json_estricto_y_estable():
     snap = app.snapshot()
     await app.stop()
     json.dumps(snap, allow_nan=False)
-    assert {
-        "profile",
-        "running",
-        "uptime_s",
-        "agents",
-        "topics",
-        "hub",
-        "components",
-    } <= set(snap)
-    assert set(snap["topics"]) == {t.value for t in Topic}
-    assert {"published", "last_at"} <= set(snap["topics"]["vision.detections"])
-    assert {"published", "dropped", "overflow"} <= set(snap["hub"])
+    assert {"profile", "running", "uptime_s", "components", "pipeline", "api"} <= set(
+        snap
+    )
+    assert not {"agents", "topics", "hub"} & set(snap)  # viven en app.view (tap)
+    assert {t["topic"] for t in app.view.topics()} == {t.value for t in Topic}
     for name in ("camera", "detector", "location", "identity", "actuation", "fusion"):
         assert name in snap["components"], name
         assert "status" in snap["components"][name]
@@ -266,7 +260,8 @@ async def test_laptop_sin_webcam_ni_c6_degrada_visible_y_no_cae():
                 for _, m in app.hub.history
             )
         )
-        assert all(a["state"] == "running" for a in app.snapshot()["agents"].values())
+        roles = [a for a in app.view.agents() if a["role"] != "component"]
+        assert all(a["state"] == "running" for a in roles)
     finally:
         await app.stop()
 

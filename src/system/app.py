@@ -29,6 +29,9 @@ from typing import Any, Protocol
 from agents import AgentRuntime
 from agents.handlers import build_default_handlers
 from bus import InMemoryHub, MetadataEnvelope, Topic
+from comms import BusTap
+from comms.api import check_bind, create_app
+from comms.server import CommsServer
 from compare import FakeDetector
 from compare.detectors import Detector
 from pipeline import (
@@ -42,6 +45,7 @@ from pipeline import (
     opencv_source_factory,
 )
 
+from .api import RunnerCommsHandler, RunnerView
 from .config import SystemConfig
 from .fusion_service import FusionService
 from .plugins import PluginRegistry
@@ -53,7 +57,7 @@ from .simulators import (
     TagReplay,
 )
 from .sources import PLACEHOLDER_URI, FileSourceFactory, fake_source_factory
-from .stats import InstrumentedHub, MemoryAlertSink, MemoryEventSink
+from .stats import MemoryAlertSink, MemoryEventSink
 from .tracking import ZoneEntryRule, make_track_fn
 
 logger = logging.getLogger(__name__)
@@ -105,11 +109,16 @@ class SystemApp:
         plugins: PluginRegistry | None = None,
         source_factory: SourceFactory | None = None,
         detector: Detector | None = None,
+        api_token: str | None = None,
     ) -> None:
         self.config = config
-        self._hub: InMemoryHub = hub or InstrumentedHub(
+        self._hub: InMemoryHub = hub or InMemoryHub(
             queue_size=config.queue_size, history_size=config.history_size
         )
+        self._api_token = api_token or None
+        self._tap = BusTap(self._hub)
+        self._view = RunnerView(self._tap, self._component_health)
+        self._server: CommsServer | None = None
         self._plugins = plugins or PluginRegistry()
         self._source_factory = source_factory
         self._detector: Detector | None = detector
@@ -140,6 +149,25 @@ class SystemApp:
         return self._hub
 
     @property
+    def tap(self) -> BusTap:
+        """Tap del bus: única fuente de estadísticas por tópico."""
+        return self._tap
+
+    @property
+    def view(self) -> RunnerView:
+        """``SystemView`` (agentes, tópicos, eventos, decisiones) de la API."""
+        return self._view
+
+    @property
+    def api_url(self) -> str | None:
+        """URL base de la API de observabilidad, o ``None`` si está apagada."""
+        if self._server is None or not self._running:
+            return None
+        host = self.config.api.host
+        shown = f"[{host}]" if ":" in host else host
+        return f"http://{shown}:{self._server.port}"
+
+    @property
     def runtime(self) -> AgentRuntime:
         if self._runtime is None:
             raise RuntimeError("El sistema aún no se ha iniciado")
@@ -160,6 +188,7 @@ class SystemApp:
             self._build_runtime()
             assert self._runtime is not None
             await self._runtime.start()
+            self._view.bind_runtime(self._runtime)
             self._running = True
             await self._start_components()
             await self._start_pipeline()
@@ -195,35 +224,20 @@ class SystemApp:
             await self.stop()
 
     def snapshot(self) -> dict[str, Any]:
-        """Estado actual como JSON estricto (solo metadata operativa)."""
-        agents: dict[str, Any] = {}
-        if self._runtime is not None:
-            for name, health in self._runtime.health().items():
-                agents[name] = {
-                    **health,
-                    "state": str(getattr(health["state"], "value", health["state"])),
-                }
-        stats = getattr(self._hub, "topic_stats", None)
-        topics = (
-            stats()
-            if callable(stats)
-            else {t.value: {"published": 0, "last_at": None} for t in Topic}
-        )
+        """Perfil, componentes y pipeline como JSON estricto.
+
+        Agentes, tópicos, eventos y decisiones se leen de ``SystemApp.view``
+        (tap del bus), no de aquí.
+        """
         return {
             "profile": self.config.profile,
             "running": self._running,
             "uptime_s": round(time.monotonic() - self._started_at, 3)
             if self._started_at is not None and self._running
             else 0.0,
-            "agents": agents,
-            "topics": topics,
-            "hub": dict(self._hub.stats),
             "components": self._component_health(),
             "pipeline": dict(self._pipeline.health()) if self._pipeline else {},
-            "recent": {
-                "events_stored": self._event_sink.total,
-                "alerts_sent": self._alert_sink.total,
-            },
+            "api": self.api_url,
         }
 
     # ------------------------------------------------------------ ensamblado
@@ -235,6 +249,22 @@ class SystemApp:
             alert_sink=self._alert_sink,
             event_rules=[ZoneEntryRule(cfg.zones)],
             track_fn=make_track_fn(cfg.zones),
+        )
+        api = cfg.api
+        if api.enabled:
+            check_bind(api.host, self._api_token)  # falla antes de arrancar nada
+            web = create_app(
+                self._view,
+                token=self._api_token,
+                host=api.host,
+                allowed_origins=api.allowed_origins,
+            )
+            self._server = CommsServer(web, api.host, api.port)
+        handlers["comms"] = RunnerCommsHandler(
+            self._alert_sink,
+            self._tap,
+            self._server,
+            (api.host, api.port) if api.enabled else None,
         )
         self._runtime = AgentRuntime(
             self._hub,

@@ -127,3 +127,54 @@ def test_debug_deja_pasar_la_excepcion(monkeypatch):
     monkeypatch.setattr(cli.SystemApp, "start", boom)
     with pytest.raises(RuntimeError, match="fallo de prueba"):
         main(["--profile", "sim", "--duration", "1", "--debug"])
+
+
+def test_api_imprime_la_url(capsys):
+    assert (
+        main(["--profile", "sim", "--api", "--api-port", "0", "--duration", "1"]) == 0
+    )
+    out = capsys.readouterr().out
+    assert "API de observabilidad: http://127.0.0.1:" in out
+
+
+def test_api_host_publico_sin_token_sale_con_2(capsys):
+    code = main(["--api", "--api-host", "0.0.0.0", "--duration", "1"])
+    assert code == 2
+    assert "token" in capsys.readouterr().err.lower()
+
+
+def test_api_host_publico_con_token_arranca(capsys):
+    code = main(
+        [
+            "--api",
+            "--api-host",
+            "0.0.0.0",
+            "--api-port",
+            "0",
+            "--token",
+            "t",
+            "--duration",
+            "1",
+        ]
+    )
+    assert code == 0
+    assert "API de observabilidad:" in capsys.readouterr().out
+
+
+def test_token_sin_api_se_rechaza(capsys):
+    assert main(["--token", "x", "--duration", "1"]) == 2
+
+
+def test_api_con_puerto_ocupado_sale_con_1_y_mensaje(capsys):
+    import socket
+
+    blocker = socket.socket()
+    blocker.bind(("127.0.0.1", 0))
+    blocker.listen()
+    try:
+        port = str(blocker.getsockname()[1])
+        code = main(["--api", "--api-port", port, "--duration", "1"])
+    finally:
+        blocker.close()
+    assert code == 1
+    assert f"puerto {port}" in capsys.readouterr().err

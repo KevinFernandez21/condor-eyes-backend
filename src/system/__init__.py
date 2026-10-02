@@ -7,12 +7,10 @@ API estable para otros componentes (observabilidad, dashboard):
 from .app import SystemApp
 from .config import ConfigError, SystemConfig, load_system_config
 from .plugins import KNOWN_PLUGINS, PluginRegistry
-from .stats import InstrumentedHub
 
 __all__ = [
     "KNOWN_PLUGINS",
     "ConfigError",
-    "InstrumentedHub",
     "PluginRegistry",
     "SystemApp",
     "SystemConfig",
