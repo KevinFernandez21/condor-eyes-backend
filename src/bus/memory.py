@@ -79,9 +79,7 @@ class InMemoryHub:
         if queue_size < 1:
             raise ValueError("queue_size debe ser al menos 1")
         self._queue_size = queue_size
-        self._subscriptions: defaultdict[Topic, list[Subscription]] = defaultdict(
-            list
-        )
+        self._subscriptions: defaultdict[Topic, list[Subscription]] = defaultdict(list)
         self._closed = False
         self.history: list[tuple[Topic, MetadataEnvelope]] = []
         self.stats: dict[str, int] = {"published": 0, "dropped": 0}
