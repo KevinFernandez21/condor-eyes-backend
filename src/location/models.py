@@ -66,6 +66,7 @@ class Evidence:
     zone_id: str
     smoothed_rssi_dbm: float
     samples: int
+    first_seen_at: datetime
     last_seen_at: datetime
 
 
