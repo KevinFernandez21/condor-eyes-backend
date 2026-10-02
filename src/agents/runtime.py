@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import asyncio
 import concurrent.futures
+import copy
 import logging
 import time
 from collections import OrderedDict
@@ -28,8 +29,10 @@ from enum import StrEnum
 from typing import Any, Protocol
 
 from bus import (
+    HubError,
     MetadataEnvelope,
     MetadataHub,
+    MetadataSubscription,
     Topic,
     build_error_envelope,
     parse_topic,
@@ -160,9 +163,10 @@ class RoleWorker:
         self._sleep = sleep
         self._seen = _SeenEvents(seen_capacity)
         self._shutdown_timeout = shutdown_timeout
-        self._subscriptions: list[Any] = []
+        self._subscriptions: list[MetadataSubscription] = []
         self._tasks: list[asyncio.Task[None]] = []
         self._busy = 0
+        self._reporters: set[asyncio.Task[None]] = set()
 
     # -- ciclo de vida --
 
@@ -170,18 +174,30 @@ class RoleWorker:
         self.state = WorkerState.STARTING
         try:
             await self.handler.start()
-        except Exception:
-            self.state = WorkerState.FAILED
-            raise
-        for topic in self.route.consumes:
-            subscription = self._hub.subscribe(topic)
-            self._subscriptions.append(subscription)
-            self._tasks.append(
-                asyncio.create_task(
+            for topic in self.route.consumes:
+                subscription = self._hub.subscribe(topic)
+                self._subscriptions.append(subscription)
+                task = asyncio.create_task(
                     self._consume(topic, subscription), name=f"{self.name}:{topic}"
                 )
-            )
+                task.add_done_callback(self._on_consumer_done)
+                self._tasks.append(task)
+        except BaseException:  # incluye CancelledError: no dejar tareas huérfanas
+            self.abort()
+            self.state = WorkerState.FAILED
+            raise
         self.state = WorkerState.RUNNING
+
+    def abort(self) -> None:
+        """Libera suscripciones y tareas sin esperar (síncrono, a prueba de cancelación)."""
+        for subscription in self._subscriptions:
+            subscription.close()
+        for task in self._tasks:
+            task.cancel()
+        self._tasks.clear()
+        self._subscriptions.clear()
+        if self.state is not WorkerState.FAILED:
+            self.state = WorkerState.STOPPED
 
     async def stop(self) -> None:
         if self.state in (WorkerState.STOPPED, WorkerState.CREATED):
@@ -189,19 +205,25 @@ class RoleWorker:
         self.state = WorkerState.STOPPING
         for subscription in self._subscriptions:
             subscription.close()  # entrega lo encolado y luego termina
-        if self._tasks:
-            _, pending = await asyncio.wait(self._tasks, timeout=self._shutdown_timeout)
-            for task in pending:
-                task.cancel()
-            if pending:
-                await asyncio.gather(*pending, return_exceptions=True)
-                logger.warning("El rol '%s' no vació sus colas a tiempo", self.name)
-        self._tasks.clear()
-        self._subscriptions.clear()
         try:
+            if self._tasks:
+                _, pending = await asyncio.wait(
+                    self._tasks, timeout=self._shutdown_timeout
+                )
+                for task in pending:
+                    task.cancel()
+                if pending:
+                    await asyncio.gather(*pending, return_exceptions=True)
+                    logger.warning("El rol '%s' no vació sus colas a tiempo", self.name)
+            self._tasks.clear()
+            self._subscriptions.clear()
             await self.handler.stop()
+        except asyncio.CancelledError:
+            self.abort()  # cancelación a mitad de parada: soltar todo y propagar
+            raise
         finally:
-            self.state = WorkerState.STOPPED
+            if self.state is WorkerState.STOPPING:
+                self.state = WorkerState.STOPPED
 
     # -- procesamiento --
 
@@ -209,7 +231,36 @@ class RoleWorker:
     def idle(self) -> bool:
         return self._busy == 0 and all(s.pending == 0 for s in self._subscriptions)
 
-    async def _consume(self, topic: Topic, subscription: Any) -> None:
+    def _on_consumer_done(self, task: asyncio.Task[None]) -> None:
+        """Si un consumidor muere sin que se esté parando, el rol queda FAILED."""
+        if task.cancelled() or self.state is not WorkerState.RUNNING:
+            return
+        error = task.exception()
+        if error is None:
+            logger.warning(
+                "El consumidor '%s' terminó (¿hub cerrado?)", task.get_name()
+            )
+            return
+        self.state = WorkerState.FAILED
+        self.last_error = f"{type(error).__name__}: {error}"
+        self.failures += 1
+        logger.error("El consumidor '%s' murió: %s", task.get_name(), error)
+        report = build_error_envelope(
+            self.name, error, failed_topic=None, stage="consume"
+        )
+        reporter = asyncio.get_running_loop().create_task(self._publish_report(report))
+        self._reporters.add(reporter)
+        reporter.add_done_callback(self._reporters.discard)
+
+    async def _publish_report(self, report: MetadataEnvelope) -> None:
+        try:
+            await self._hub.publish(Topic.ERRORS, report)
+        except Exception:
+            logger.exception(
+                "No se pudo publicar el evento de error de '%s'", self.name
+            )
+
+    async def _consume(self, topic: Topic, subscription: MetadataSubscription) -> None:
         async for envelope in subscription:
             self._busy += 1
             try:
@@ -228,7 +279,10 @@ class RoleWorker:
             try:
                 outputs = await self.handler.handle(topic, envelope)
                 await self._publish_outputs(outputs)
-            except RouteViolationError as exc:  # error de programación: no reintentar
+            except (
+                RouteViolationError,
+                HubError,
+            ) as exc:  # deterministas: no reintentar
                 await self._fail(topic, envelope, exc, attempts)
                 return
             except Exception as exc:  # noqa: BLE001 - todo fallo del manejador se reintenta
@@ -266,12 +320,7 @@ class RoleWorker:
             stage="handle",
             attempts=attempts,
         )
-        try:
-            await self._hub.publish(Topic.ERRORS, report)
-        except Exception:
-            logger.exception(
-                "No se pudo publicar el evento de error de '%s'", self.name
-            )
+        await self._publish_report(report)
 
     def health(self) -> dict[str, Any]:
         """Instantánea operativa: solo metadata, sin frames."""
@@ -374,28 +423,49 @@ class AgentRuntime:
         for worker in reversed(self._workers):
             try:
                 await worker.start()
-            except Exception as exc:
+            except BaseException as exc:
                 for done in started:  # rollback en orden de flujo
-                    await self._safe_stop(done)
-                raise RuntimeStartError(
-                    f"No se pudo iniciar el rol '{worker.name}': {exc}"
-                ) from exc
+                    if isinstance(exc, Exception):
+                        await self._safe_stop(done)
+                    else:  # cancelación: sin esperas
+                        done.abort()
+                if isinstance(exc, Exception):
+                    raise RuntimeStartError(
+                        f"No se pudo iniciar el rol '{worker.name}': {exc}"
+                    ) from exc
+                raise
             started.append(worker)
         self._running = True
         if self._heartbeat_interval is not None:
             self._heartbeat = asyncio.create_task(self._heartbeat_loop())
 
     async def stop(self) -> None:
-        """Detiene en orden de flujo para que cada etapa vacíe su cola."""
+        """Detiene en orden de flujo para que cada etapa vacíe su cola.
+
+        Si la parada se cancela, todos los roles restantes se abortan de forma
+        síncrona antes de propagar la cancelación.
+        """
         if not self._running:
             return
         self._running = False
+        cancelled: asyncio.CancelledError | None = None
         if self._heartbeat is not None:
-            self._heartbeat.cancel()
-            await asyncio.gather(self._heartbeat, return_exceptions=True)
-            self._heartbeat = None
+            heartbeat, self._heartbeat = self._heartbeat, None
+            heartbeat.cancel()
+            try:
+                await asyncio.gather(heartbeat, return_exceptions=True)
+            except asyncio.CancelledError as exc:
+                cancelled = exc
         for worker in self._workers:
-            await self._safe_stop(worker)
+            if cancelled is not None:
+                worker.abort()
+                continue
+            try:
+                await self._safe_stop(worker)
+            except asyncio.CancelledError as exc:
+                cancelled = exc
+        if cancelled is not None:
+            raise cancelled
 
     @staticmethod
     async def _safe_stop(worker: RoleWorker) -> None:
@@ -422,7 +492,15 @@ class AgentRuntime:
     async def _heartbeat_loop(self) -> None:
         assert self._heartbeat_interval is not None
         while True:
-            await self.publish_health()
+            try:
+                await self.publish_health()
+            except Exception as exc:
+                logger.exception("Falló la publicación de salud")
+                report = build_error_envelope("runtime", exc, stage="heartbeat")
+                try:
+                    await self._hub.publish(Topic.ERRORS, report)
+                except Exception:
+                    logger.exception("No se pudo publicar el error del latido")
             await asyncio.sleep(self._heartbeat_interval)
 
     async def wait_idle(self, timeout: float = 5.0) -> None:
@@ -486,18 +564,27 @@ class AgentRuntime:
     ) -> concurrent.futures.Future[MetadataEnvelope]:
         """Puente para callbacks del pipeline que corren en hilos propios.
 
-        Solo viaja metadata; el frame permanece en el plano de video.
+        El payload se copia y valida en el hilo llamador (el pipeline puede
+        reutilizar sus buffers al volver) y la ruta se comprueba antes de
+        cruzar al loop. Solo viaja metadata; el frame permanece en el plano de
+        video.
         """
-        if self._loop is None or not self._running:
+        loop = self._loop
+        if loop is None or not self._running:
             raise RuntimeError("El runtime no está en ejecución")
-        return asyncio.run_coroutine_threadsafe(
-            self.emit(
-                role,
-                topic,
-                payload,
-                stream_id=stream_id,
-                correlation_id=correlation_id,
-                payload_version=payload_version,
-            ),
-            self._loop,
+        if loop.is_closed():
+            raise RuntimeError("El loop de eventos del runtime está cerrado")
+        check_publish_allowed(self._route_of(role), parse_topic(topic))
+        envelope = MetadataEnvelope(
+            source=role,
+            payload=copy.deepcopy(dict(payload)),
+            stream_id=stream_id,
+            correlation_id=correlation_id,
+            payload_version=payload_version,
         )
+        coroutine = self.emit_envelope(role, topic, envelope)
+        try:
+            return asyncio.run_coroutine_threadsafe(coroutine, loop)
+        except RuntimeError as exc:  # el loop se cerró entre la comprobación y el envío
+            coroutine.close()
+            raise RuntimeError("El loop de eventos del runtime está cerrado") from exc

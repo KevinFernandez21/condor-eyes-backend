@@ -17,7 +17,7 @@ from agents.runtime import (
     RuntimeStartError,
     WorkerState,
 )
-from bus import MetadataEnvelope, Topic
+from bus import InvalidEnvelopeError, MetadataEnvelope, Topic
 from bus.agentscope_hub import AgentScopeHub
 from bus.memory import InMemoryHub
 
@@ -402,6 +402,233 @@ async def test_heartbeat_publishes_health_periodically(hub):
 
 def test_route_roles_match_runtime_roles():
     assert {route.name for route in MULTIAGENT_ROUTE} == ROLES
+
+
+class FlakyHealthHub:
+    """Delega en un hub real pero falla la primera publicación de salud."""
+
+    def __init__(self, inner) -> None:
+        self.inner = inner
+        self.failed = False
+
+    async def publish(self, topic, message):
+        if topic is Topic.HEALTH and not self.failed:
+            self.failed = True
+            raise OSError("bus saturado")
+        await self.inner.publish(topic, message)
+
+    def subscribe(self, topic):
+        return self.inner.subscribe(topic)
+
+
+async def test_heartbeat_survives_publish_failures_and_reports_error(hub):
+    flaky = FlakyHealthHub(hub)
+    handlers = build_default_handlers(
+        storage_sink=CountingSink(), alert_sink=CountingSink()
+    )
+    runtime = AgentRuntime(flaky, handlers, heartbeat_interval=0.01)
+    errors = hub.subscribe(Topic.ERRORS)
+    health = hub.subscribe(Topic.HEALTH)
+    await runtime.start()
+    error = await asyncio.wait_for(errors.__anext__(), 2)
+    assert error.source == "runtime"
+    assert error.payload["stage"] == "heartbeat"
+    assert error.payload["error_type"] == "OSError"
+    await asyncio.wait_for(health.__anext__(), 2)  # el latido siguió vivo
+    await runtime.stop()
+    await hub.close()
+
+
+async def test_dead_consumer_task_marks_worker_failed_and_emits_error(runtime, hub):
+    errors = hub.subscribe(Topic.ERRORS)
+    await runtime.start()
+    worker = next(w for w in runtime._workers if w.name == "storage")
+
+    async def boom(topic, envelope):
+        raise RuntimeError("fallo inesperado")
+
+    worker._process = boom  # type: ignore[method-assign]
+    await runtime.emit("event", Topic.EVENTS, {"type": "x"})
+    error = await asyncio.wait_for(errors.__anext__(), 2)
+
+    assert error.source == "storage"
+    assert error.payload["stage"] == "consume"
+    assert runtime.health()["storage"]["state"] == WorkerState.FAILED
+    assert "fallo inesperado" in runtime.health()["storage"]["last_error"]
+    await runtime.stop()
+
+
+async def test_deterministic_validation_errors_are_not_retried(hub):
+    class BadVersion:
+        async def start(self) -> None: ...
+        async def stop(self) -> None: ...
+        async def handle(self, topic, envelope):
+            bad = MetadataEnvelope(source="tracker", payload={}, payload_version=9)
+            return [(Topic.TRACKS, bad)]
+
+    handlers = build_default_handlers(
+        storage_sink=CountingSink(), alert_sink=CountingSink()
+    )
+    handlers["tracker"] = BadVersion()
+    runtime = AgentRuntime(
+        hub, handlers, retry=RetryPolicy(max_attempts=5, base_delay=0)
+    )
+    errors = hub.subscribe(Topic.ERRORS)
+    await runtime.start()
+    await runtime.emit("inference", Topic.DETECTIONS, DETECTION)
+    await runtime.wait_idle()
+    await runtime.stop()
+    await hub.close()
+
+    (error,) = [m async for m in errors]
+    assert error.payload["error_type"] == "UnsupportedVersionError"
+    assert error.payload["attempts"] == 1
+    assert runtime.health()["tracker"]["retries"] == 0
+
+
+def _no_worker_tasks_left() -> bool:
+    current = asyncio.current_task()
+    return [t for t in asyncio.all_tasks() if t is not current] == []
+
+
+async def test_cancelled_start_rolls_back_started_workers(hub):
+    class Hangs:
+        async def start(self) -> None:
+            await asyncio.Event().wait()
+
+        async def stop(self) -> None: ...
+        async def handle(self, topic, envelope):
+            return []
+
+    handlers = build_default_handlers(
+        storage_sink=CountingSink(), alert_sink=CountingSink()
+    )
+    handlers["event"] = Hangs()
+    runtime = AgentRuntime(hub, handlers)
+    task = asyncio.create_task(runtime.start())
+    await asyncio.sleep(0.05)
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    assert all(h["state"] != WorkerState.RUNNING for h in runtime.health().values())
+    assert _no_worker_tasks_left()
+
+
+async def test_cancelled_stop_still_releases_every_worker(hub):
+    class HangsOnStop:
+        async def start(self) -> None: ...
+        async def stop(self) -> None:
+            await asyncio.Event().wait()
+
+        async def handle(self, topic, envelope):
+            return []
+
+    handlers = build_default_handlers(
+        storage_sink=CountingSink(), alert_sink=CountingSink()
+    )
+    handlers["tracker"] = HangsOnStop()
+    runtime = AgentRuntime(hub, handlers)
+    await runtime.start()
+    task = asyncio.create_task(runtime.stop())
+    await asyncio.sleep(0.05)
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    assert all(h["state"] != WorkerState.RUNNING for h in runtime.health().values())
+    assert _no_worker_tasks_left()
+
+
+async def test_supervisor_throttles_restart_commands_with_backoff():
+    now = 0.0
+    supervisor = SupervisorHandler(restart_cooldown=30.0, clock=lambda: now)
+
+    def health(state: str) -> MetadataEnvelope:
+        return MetadataEnvelope(
+            source="tracker", payload={"role": "tracker", "state": state}
+        )
+
+    async def feed(state: str):
+        return await supervisor.handle(Topic.HEALTH, health(state))
+
+    first = await feed("failed")
+    assert [m.event_id for _, m in first] == ["restart/tracker/1"]
+    now = 10
+    assert await feed("failed") == []
+    now = 31
+    second = await feed("failed")
+    assert [m.event_id for _, m in second] == ["restart/tracker/2"]
+    now = 31 + 59  # backoff exponencial: ahora hacen falta 60 s
+    assert await feed("failed") == []
+    now = 31 + 61
+    third = await feed("failed")
+    assert [m.event_id for _, m in third] == ["restart/tracker/3"]
+    await feed("running")  # recuperado: se reinicia el contador
+    now += 1
+    again = await feed("failed")
+    assert [m.event_id for _, m in again] == ["restart/tracker/1"]
+
+
+async def test_heartbeat_does_not_flood_restart_commands(hub):
+    handlers = build_default_handlers(
+        storage_sink=CountingSink(), alert_sink=CountingSink()
+    )
+    runtime = AgentRuntime(hub, handlers)
+    commands = hub.subscribe(Topic.COMMANDS)
+    await runtime.start()
+    next(w for w in runtime._workers if w.name == "tracker").state = WorkerState.FAILED
+    for _ in range(5):
+        await runtime.publish_health()
+        await runtime.wait_idle()
+    await runtime.stop()
+    await hub.close()
+    assert len([m async for m in commands]) == 1
+
+
+async def test_emit_threadsafe_snapshots_payload_in_caller_thread(runtime, sinks):
+    storage, _ = sinks
+    await runtime.start()
+    payload = {"detections": [{"id": 1, "label": "person"}]}
+    holder = {}
+
+    def pipeline_callback() -> None:
+        holder["future"] = runtime.emit_threadsafe(
+            "inference", Topic.DETECTIONS, payload, stream_id="cam-01"
+        )
+        # el pipeline reutiliza sus buffers justo después de notificar
+        payload["detections"].append({"id": 2, "label": "person"})
+
+    thread = threading.Thread(target=pipeline_callback)
+    thread.start()
+    while thread.is_alive():
+        await asyncio.sleep(0.01)
+    await asyncio.wrap_future(holder["future"])
+    await runtime.wait_idle()
+    await runtime.stop()
+
+    assert storage.saved[0].payload["track_ids"] == [1]
+
+
+async def test_emit_threadsafe_rejects_invalid_payload_in_caller_thread(runtime):
+    await runtime.start()
+    with pytest.raises(InvalidEnvelopeError, match="binarios"):
+        runtime.emit_threadsafe("inference", Topic.DETECTIONS, {"frame": b"raw"})
+    with pytest.raises(RouteViolationError):
+        runtime.emit_threadsafe("comms", Topic.DETECTIONS, {})
+    await runtime.stop()
+
+
+async def test_emit_threadsafe_reports_closed_loop_clearly(runtime):
+    await runtime.start()
+    closed = asyncio.new_event_loop()
+    closed.close()
+    real_loop = runtime._loop
+    runtime._loop = closed
+    with pytest.raises(RuntimeError, match="cerrado"):
+        runtime.emit_threadsafe("inference", Topic.DETECTIONS, DETECTION)
+    runtime._loop = real_loop
+    await runtime.stop()
 
 
 # --- Higiene de AgentScope --------------------------------------------------

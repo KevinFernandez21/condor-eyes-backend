@@ -13,7 +13,9 @@ identificadores de salida y los consumidores pueden deduplicar.
 
 from __future__ import annotations
 
+import time
 from collections.abc import Awaitable, Callable, Iterable, Mapping, Sequence
+from dataclasses import replace
 from typing import Any, Protocol
 
 from bus import MetadataEnvelope, Topic
@@ -166,12 +168,25 @@ class SupervisorHandler(_BaseHandler):
 
     Solo consume metadata operativa: no tiene acceso a frames porque ningún
     tópico del bus los transporta.
+
+    Los reinicios se limitan por rol con backoff exponencial: el primero sale
+    de inmediato, el siguiente tras ``restart_cooldown`` segundos, luego el
+    doble, etc. Un reporte sano reinicia el contador. El ``event_id`` del
+    comando es determinista (``restart/<rol>/<n>``).
     """
 
-    def __init__(self) -> None:
+    def __init__(
+        self,
+        *,
+        restart_cooldown: float = 30.0,
+        clock: Callable[[], float] = time.monotonic,
+    ) -> None:
         self.health: dict[str, Mapping[str, Any]] = {}
         self.streams: dict[str, str] = {}
         self.errors: list[Mapping[str, Any]] = []
+        self._cooldown = restart_cooldown
+        self._clock = clock
+        self._restarts: dict[str, tuple[int, float]] = {}
 
     async def handle(
         self, topic: Topic, envelope: MetadataEnvelope
@@ -183,15 +198,29 @@ class SupervisorHandler(_BaseHandler):
             self.errors.append(envelope.payload)
         elif topic is Topic.HEALTH:
             self.health[envelope.source] = envelope.payload
-            if envelope.payload.get("state") == WorkerState.FAILED.value:
-                target = envelope.payload.get("role", envelope.source)
-                command = envelope.derive(
-                    "supervisor",
-                    {"action": "restart", "target": target},
-                    suffix="commands",
-                )
-                return [(Topic.COMMANDS, command)]
+            target = str(envelope.payload.get("role", envelope.source))
+            if envelope.payload.get("state") != WorkerState.FAILED.value:
+                self._restarts.pop(target, None)
+                return []
+            return self._maybe_restart(envelope, target)
         return []
+
+    def _maybe_restart(
+        self, envelope: MetadataEnvelope, target: str
+    ) -> Sequence[Outgoing]:
+        now = self._clock()
+        count, last = self._restarts.get(target, (0, 0.0))
+        if count and now - last < self._cooldown * 2 ** (count - 1):
+            return []  # en enfriamiento: no inundar con comandos
+        count += 1
+        self._restarts[target] = (count, now)
+        command = envelope.derive(
+            "supervisor",
+            {"action": "restart", "target": target},
+            suffix="commands",
+        )
+        command = replace(command, event_id=f"restart/{target}/{count}")
+        return [(Topic.COMMANDS, command)]
 
     def report(self) -> dict[str, Any]:
         """Resumen de salud para la API o para el agente ReAct."""

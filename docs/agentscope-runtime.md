@@ -67,6 +67,27 @@ pruebas; `AgentScopeHub` la extiende. Ninguno aplica reglas de negocio.
 - **Pipeline**: `emit_threadsafe(...)` permite a los callbacks del pipeline
   (hilos GStreamer) publicar metadata sin acceder al bus asyncio.
 
+## Saturación, observadores y rendimiento
+
+- **Política por tópico** (`bus/memory.py`): `events` y `system.commands` son
+  sin pérdida (la cola crece y se publica un evento en `system.errors`); el
+  resto es telemetría de "última lectura gana" (se descarta el más antiguo y
+  se publica un evento de error). `system.errors` descarta sin emitir otro
+  evento. Los eventos de saturación se limitan al primero y luego uno cada
+  100 descartes, con `dropped_total` acumulado.
+- **Observadores AgentScope**: cada agente adjunto tiene cola acotada y tarea
+  propia; `publish` nunca espera a `Agent.observe`. `hub.flush()` espera a que
+  procesen lo encolado y `hub.close()` los vacía.
+- **Validación**: el payload se recorre al construir el envelope y una vez más
+  al publicar; el `Msg` interno se arma sin revalidar. Una publicación por
+  `AgentScopeHub` ejecuta una sola validación (test
+  `test_publish_validates_the_payload_only_once`), frente a ~5 antes.
+- **Reinicios**: el supervisor limita los comandos de reinicio por rol con
+  backoff exponencial (`restart_cooldown`) y `event_id` determinista
+  `restart/<rol>/<n>`.
+- **Historial**: `history` conserva solo los últimos `history_size` mensajes
+  (1000 por defecto, `0` lo desactiva); es para pruebas y depuración.
+
 ## Secuencia
 
 ```mermaid
