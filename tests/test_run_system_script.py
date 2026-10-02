@@ -102,3 +102,28 @@ def test_ctrl_break_en_subproceso_windows():
             proc.kill()
     assert proc.returncode == 0, err
     assert "Deteniendo" in out
+
+
+def test_error_inesperado_no_muestra_traceback(monkeypatch, capsys):
+    import system.cli as cli
+
+    async def boom(self):
+        raise RuntimeError("fallo de prueba")
+
+    monkeypatch.setattr(cli.SystemApp, "start", boom)
+    assert main(["--profile", "sim", "--duration", "1"]) == 1
+    err = capsys.readouterr().err
+    assert "fallo de prueba" in err
+    assert "--debug" in err
+    assert "Traceback" not in err
+
+
+def test_debug_deja_pasar_la_excepcion(monkeypatch):
+    import system.cli as cli
+
+    async def boom(self):
+        raise RuntimeError("fallo de prueba")
+
+    monkeypatch.setattr(cli.SystemApp, "start", boom)
+    with pytest.raises(RuntimeError, match="fallo de prueba"):
+        main(["--profile", "sim", "--duration", "1", "--debug"])

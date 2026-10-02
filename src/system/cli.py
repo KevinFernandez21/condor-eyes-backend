@@ -16,6 +16,7 @@ from .config import DEFAULT_CONFIG_PATH, ConfigError, load_system_config
 
 EXIT_OK = 0
 EXIT_CONFIG = 2
+EXIT_ERROR = 1
 
 
 def _positive(text: str) -> float:
@@ -48,6 +49,9 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--config", type=Path, default=DEFAULT_CONFIG_PATH)
     parser.add_argument("--verbose", action="store_true", help="logs DEBUG")
+    parser.add_argument(
+        "--debug", action="store_true", help="muestra el traceback ante errores"
+    )
     return parser
 
 
@@ -120,7 +124,17 @@ def main(argv: Sequence[str] | None = None) -> int:
         print(f"Error de configuración (perfil/archivo): {exc}", file=sys.stderr)
         return EXIT_CONFIG
     app = SystemApp(config)
-    snapshot = asyncio.run(_run(app, args.duration))
+    try:
+        snapshot = asyncio.run(_run(app, args.duration))
+    except Exception as exc:  # noqa: BLE001 - frontera del CLI: mensaje claro, no traceback
+        if args.debug:
+            raise
+        print(
+            f"Error al ejecutar el sistema ({type(exc).__name__}): {exc}. "
+            "Use --debug para ver el traceback.",
+            file=sys.stderr,
+        )
+        return EXIT_ERROR
     if snapshot:
         print(format_summary(snapshot), flush=True)
     return EXIT_OK
