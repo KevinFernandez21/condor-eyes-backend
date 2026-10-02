@@ -34,6 +34,12 @@ navegador ──GET /api/state (1 s)──▶ servidor del dashboard ──HTTP 
 - `src/dashboard/viewmodel.py`: funciones puras (grafo, feed, alertas, mapa, salud, redacción). `state.py`: estado. `client.py`: red. `server.py`: FastAPI. `static/`: HTML/CSS/JS que solo pinta (nunca inserta HTML con datos del bus).
 - Si la API cae: banner, estado `Sin conexión`, el grafo se atenúa y se conservan los últimos datos; el WS reintenta solo. Los mensajes `lag` se cuentan y se avisan.
 
+## Seguridad y TLS
+
+- Cliente HTTP con `verify=False` **solo para `http://`**: es un rodeo del entorno (en esta laptop Windows el almacén de certificados tiene uno inválido y `ssl.create_default_context()` lanza `INVALID_CERTIFICATE`, incluso al construir un cliente `httpx`). En `http://` no hay TLS que verificar, así que no se pierde ninguna garantía.
+- Con `https://` se verifica el certificado con el almacén del sistema. Si falla por el mismo problema, usa `truststore` (almacén del SO) o `certifi` (bundle propio) en lugar de desactivar la verificación.
+- **`--allow-lan` con API en `http://`: el token viaja en claro** por la red (cabecera `Authorization`), y el dashboard no tiene login propio. Úsalo solo en redes de confianza o pon TLS delante.
+
 ## Paneles
 
 - **Grafo**: nodos = roles de `src/agents/route.py` + `fusion`, `location`, `identity`, `actuation` (previstos, punteados hasta que la API los reporte); aristas = tópicos con msg/s y descartes de `/topics`. Color por estado: en marcha, degradado, caído, detenido, sin datos (también con texto).
