@@ -123,26 +123,31 @@ Al apagar, `flush()`/`shutdown()` del SDK corren en un hilo con tope (`close_tim
 
 ### Filtro de privacidad (`src/tracing/privacy.py`)
 
-*Deny-by-default*: solo sale lo que una regla nombra; lo demás se descarta y se **cuenta** (`redacted_fields`, solo el número, sin contenido).
+*Deny-by-default*, **sin intentar reconocer ids "seguros" de forma libre** (cualquier formato permitido acaba siendo un canal de datos). Lo no nombrado se descarta y solo se **cuenta** (`redacted_fields`, número, sin contenido). El filtro es *total*: ante tipos raros (listas donde va texto, `None`, objetos) descarta y cuenta, no lanza.
 
 | Campo | Regla |
 |-------|-------|
-| `outcome`, `reason_codes`, `evidence[].kind`, `evidence[].role` | vocabulario cerrado de `fusion.decision` (`DecisionOutcome`, `ReasonCode`, `EvidenceKind`, `EvidenceRole`); otro valor se descarta |
-| `type`, `action`, `target`, `state`, `stage`, `status` | `^[a-z][a-z0-9_]{0,31}$` (sin mayúsculas, espacios, `@`, base64, `data:` ni cadenas largas); `error_type`: `^[A-Za-z][A-Za-z0-9_]{0,63}$` |
-| `confidence` | número finito en [0, 1]; NaN/inf y fuera de rango se descartan |
-| `evaluated_at`, `observed_at`, `created_at` | ISO 8601 válida, re-serializada |
-| `event_id`, `correlation_id`, `causation_id`, `decision_id`, `evidence_id`, `track_ref` | tal cual solo con el formato que generan el bus y la fusión (hex + sufijos `/tracks`, `/events/0`, `restart/<rol>/<n>`, `dec-<n>`); si no, **HMAC** `h-<16 hex>` |
-| `stream_id`, `zone_id`, `source` | etiqueta `^[A-Za-z0-9][A-Za-z0-9_.-]{0,39}$`; si no, HMAC |
-| `person_id` | **siempre HMAC**, nunca en claro (aunque parezca un seudónimo) |
-| `detections`, `tracks` | solo `<campo>_count`; cualquier otra lista de objetos se descarta |
+| `event_id`, `correlation_id`, `causation_id`, `decision_id`, `evidence_id`, `track_ref`, `person_id`, padres de un salto | **siempre HMAC** `h-<16 hex>`, sin excepciones. El id crudo vive solo en el `TraceStore` local / API, nunca se exporta |
+| `stream_id`, `zone_id`, `source` | HMAC salvo allowlist explícita: `PrivacyFilter(allowed_streams=, allowed_zones=, allowed_sources=)` o `TRACING_ALLOWED_STREAMS` / `TRACING_ALLOWED_ZONES` / `TRACING_ALLOWED_SOURCES` (coma). Por defecto solo pasan como `source` los roles de agente, `fusion`, `runtime` y `hub` |
+| `type` | `events.model.EventType` |
+| `action` | `restart` |
+| `target`, `role` | roles de `agents.route.MULTIAGENT_ROUTE` (un test comprueba que coinciden) |
+| `state` | `WorkerState`, `StreamState`, `up`, `down` |
+| `stage` | `handle`, `consume`, `heartbeat`, `queue_overflow` |
+| `status` | `IdentityStatus`, `ReidStatus` |
+| `error_type` | excepciones de `builtins` y los errores del bus |
+| `outcome`, `reason_codes`, `kind`, `evidence[].role` | `DecisionOutcome`, `ReasonCode`, `EvidenceKind`, `EvidenceRole` |
+| `confidence` | número finito en [0, 1] |
+| `evaluated_at`, `observed_at`, `created_at` | ISO 8601 válida, sin espacios ni saltos de línea sobrantes |
+| `detections`, `tracks` | solo `<campo>_count`; otras listas de objetos se descartan |
 
-Todo lo demás (embeddings, imágenes, recortes de rostro, tag IDs crudos, nombres, cajas, `detail`) se descarta. La cadena causal que viaja en `input.chain` pasa por el mismo filtro (`PrivacyFilter.hop`).
+Los vocabularios se construyen a partir de los valores que el proyecto emite; un valor nuevo hay que añadirlo allí (si no, se descarta y se cuenta). Embeddings, imágenes, recortes de rostro, tag IDs crudos, nombres, cajas y `detail` no están en ninguna regla. La cadena `input.chain` y la semilla del `trace_id` también salen hasheadas (`PrivacyFilter.hop`).
 
-HMAC = SHA-256 con una clave **local**: `TRACING_HASH_KEY` o, si falta, una aleatoria por proceso (los hashes no son estables entre reinicios). Con la misma clave el mismo valor da el mismo hash, así que las relaciones entre saltos se conservan en Langfuse sin exponer el valor. Quien tenga la clave puede reconocer valores conocidos; no la envíes a Langfuse.
+HMAC = SHA-256 con clave **local**: `TRACING_HASH_KEY` (mínimo 16 bytes; más corta falla al arrancar con `PrivacyConfigError`, antes de crear el cliente de Langfuse) o, si falta, una aleatoria por proceso (los hashes no son estables entre reinicios). Con la misma clave el mismo valor da el mismo hash, así que las relaciones entre saltos se conservan en Langfuse. Un hash no es anonimato frente a quien tenga la clave: no se envía a Langfuse. El proyecto no tiene seudonimizador propio, por eso no se confía en ningún "formato de seudónimo".
 
-Limitación: el proyecto aún no tiene un seudonimizador propio, así que no hay un "formato de seudónimo" que reconocer; un formato validado no probaría seudonimia. Por eso se envía el HMAC y no el id. Los ids que pasan tal cual (formato de sistema, etiquetas de cámara/zona) se asumen no personales: un `stream_id` como `employee-4411` pasaría la regla de etiqueta.
+El `TraceStore` acota lo que guarda: ids de más de 128 caracteres se sustituyen por un digest (siguen enlazando), y los resúmenes de decisión llevan como máximo 32 evidencias y 32 códigos.
 
-Cubierto por `tests/test_tracing_privacy.py` y `tests/test_tracing_langfuse.py` (payloads hostiles con embeddings de 512 floats en `reason_codes`, PNG base64 en `type`/`target`, `Data:` en mayúsculas, ids tipo `employee-4411@corp`, NaN/inf; también con el SDK real y un exportador en memoria).
+Cubierto por `tests/test_tracing_privacy.py` y `tests/test_tracing_langfuse.py` (payloads hostiles: floats en `reason_codes`, PNG base64 y texto libre en las etiquetas, `Data:`, ids hex-email, `restart/JohnSmith/Madrid`, `dec-1/JohnSmith/...`, `\n` final, `employee-4411` como cámara/zona/source, tipos raros, NaN/inf; también con el SDK real y un exportador en memoria).
 
 ## WebSocket `/ws`
 

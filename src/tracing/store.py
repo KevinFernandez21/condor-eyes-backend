@@ -25,6 +25,7 @@ entre productores; si un salto resulta negativo, la traza se marca con
 from __future__ import annotations
 
 import builtins
+import hashlib
 import heapq
 import logging
 import threading
@@ -37,6 +38,19 @@ from bus import Topic
 logger = logging.getLogger(__name__)
 
 _MAX_ANCESTORS = 5_000
+_MAX_ID = 128  # un id más largo se reemplaza por un digest (sigue enlazando igual)
+_MAX_LIST = 32
+
+
+def _bound(value: Any, *, required: bool = False) -> str | None:
+    """Id acotado: texto de a lo sumo 128 caracteres o su digest; lanza si no es texto."""
+    if value is None and not required:
+        return None
+    if not isinstance(value, str) or (required and not value):
+        raise TypeError("identificador debe ser texto")
+    if len(value) <= _MAX_ID:
+        return value
+    return "sha256:" + hashlib.sha256(value.encode("utf-8", "replace")).hexdigest()[:48]
 
 # Los latidos son periódicos y cada uno abre su propia correlación: llenarían la
 # LRU y expulsarían las cadenas que sí importan.
@@ -62,31 +76,39 @@ class _Hop:
     )
 
     def __init__(self, topic: Topic, data: dict[str, Any], seq: int) -> None:
-        self.event_id: str = data["event_id"]
-        self.correlation_id: str = data.get("correlation_id") or self.event_id
-        self.causation_id: str | None = data.get("causation_id")
+        self.event_id: str = _bound(data["event_id"], required=True)  # type: ignore[assignment]
+        correlation = data.get("correlation_id")
+        self.correlation_id: str = (
+            _bound(correlation, required=True) if correlation else self.event_id  # type: ignore[assignment]
+        )
+        self.causation_id: str | None = _bound(data.get("causation_id") or None)
         self.topic = topic
-        self.source: str = data["source"]
-        self.stream_id: str | None = data.get("stream_id")
+        self.source: str = _bound(data["source"], required=True)  # type: ignore[assignment]
+        self.stream_id: str | None = _bound(data.get("stream_id"))
         self.ts = _parse_utc(data["created_at"])
         self.created_at: str = self.ts.isoformat()
         self.seq = seq
         self.decision: dict[str, Any] | None = None
         if _is_decision(topic, data):
             p = data["payload"]
+            codes = p.get("reason_codes")
             self.decision = {
-                "decision_id": p.get("decision_id"),
+                "decision_id": _bound(str(p.get("decision_id"))),
                 "outcome": p.get("outcome"),
                 "confidence": p.get("confidence"),
-                "reason_codes": builtins.list(p.get("reason_codes") or []),
+                "reason_codes": [
+                    _bound(c, required=True)
+                    for c in (codes if isinstance(codes, list) else [])[:_MAX_LIST]
+                    if isinstance(c, str)
+                ],
                 "evidence": [
                     {
-                        "evidence_id": e.get("evidence_id"),
+                        "evidence_id": _bound(e["evidence_id"], required=True),
                         "kind": e.get("kind"),
                         "role": e.get("role"),
                     }
-                    for e in (p.get("evidence") or [])
-                    if isinstance(e, dict) and e.get("evidence_id")
+                    for e in (p.get("evidence") or [])[:_MAX_LIST]
+                    if isinstance(e, dict) and isinstance(e.get("evidence_id"), str) and e["evidence_id"]
                 ],
             }
 

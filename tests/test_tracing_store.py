@@ -266,3 +266,47 @@ def test_list_de_50_trazas_de_500_saltos_es_rapido():
     t0 = time.perf_counter()
     store.get("c3")
     assert time.perf_counter() - t0 < 0.1
+
+
+def test_ids_largos_se_acotan_y_siguen_enlazando():
+    store = TraceStore()
+    largo = "x" * 5000
+    store.record(
+        Topic.DETECTIONS, raw(largo, "2026-01-01T00:00:00+00:00", "c", topic="vision.detections")
+    )
+    store.record(Topic.EVENTS, raw("b", "2026-01-01T00:00:00.010+00:00", "c", largo))
+    trace = store.get("c")
+    assert all(
+        len(h["event_id"]) <= 128 and len(h["causation_id"] or "") <= 128 for h in trace["hops"]
+    )
+    assert trace["hops"][1]["hop_latency_ms"] == 10.0  # el hijo sigue enlazado a su padre
+
+
+@pytest.mark.parametrize(
+    "malo",
+    [
+        {"event_id": ["x"]}, {"event_id": 5}, {"source": 3}, {"stream_id": ["a"]},
+        {"causation_id": 7}, {"correlation_id": {"a": 1}},
+    ],
+)
+def test_tipos_raros_se_descartan_sin_lanzar(malo):
+    store = TraceStore()
+    data = raw("a", "2026-01-01T00:00:00+00:00", "c") | malo
+    store.record(Topic.EVENTS, data)
+    assert store.skipped == 1 and store.list(5) == []
+
+
+def test_resumen_de_decision_acotado():
+    store = TraceStore()
+    data = raw("a", "2026-01-01T00:00:00+00:00", "c")
+    data["payload"] = {
+        "decision_id": "d" * 1000,
+        "reason_codes": ["r"] * 500,
+        "evidence": [
+            {"evidence_id": f"e{i}", "kind": "track", "role": "context"} for i in range(500)
+        ],
+    }
+    store.record(Topic.EVENTS, data)
+    (dec,) = store.get("c")["decisions"]
+    assert len(dec["evidence"]) <= 32 and len(dec["reason_codes"]) <= 32
+    assert len(dec["decision_id"]) <= 128
