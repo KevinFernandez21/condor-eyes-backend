@@ -73,3 +73,50 @@ def test_orphan_tag_decision_has_no_stream_but_is_published():
     asyncio.run(publish_decisions(hub, engine().evaluate(evidence, NOW)))
     assert hub.sent[0][1].stream_id is None
     assert hub.sent[0][1].payload["reason_codes"] == ["tag_without_person"]
+
+
+def _assert_json_primitives(value, path="payload"):
+    """Mismo contrato estricto que el bus: solo primitivas JSON y claves str."""
+    if value is None or type(value) in (str, int, float, bool):
+        return
+    if type(value) in (list, tuple):
+        for i, item in enumerate(value):
+            _assert_json_primitives(item, f"{path}[{i}]")
+        return
+    if type(value) is dict:
+        for k, v in value.items():
+            assert type(k) is str, f"{path}: clave no str {k!r}"
+            _assert_json_primitives(v, f"{path}.{k}")
+        return
+    raise AssertionError(f"{path}: tipo no permitido {type(value).__name__}")
+
+
+def test_every_published_envelope_payload_is_strict_json():
+    ids = (
+        IdentityEvidence("i1", "cam1/1", IdentityStatus.MATCH, FRESH, "alice", 0.9),
+        IdentityEvidence("i2", "cam1/2", IdentityStatus.NO_FACE, FRESH),
+    )
+    evidence = FusionInput(
+        tracks=(
+            TrackObservation("t1", "cam1/1", "cam1", "lab", FRESH, 0.9),
+            TrackObservation("t2", "cam1/2", "cam1", "lab", FRESH, 0.9),
+            TrackObservation("t3", "cam1/3", "cam1", "nowhere", FRESH, 0.9),
+        ),
+        identities=ids,
+        locations=(
+            LocationEvidence("l1", "alice", "lab", FRESH, 0.9),
+            LocationEvidence("l2", "bob", "lab", FRESH, 0.9, valid=False),
+            LocationEvidence("l3", "carol", "lab", NOW - timedelta(seconds=90), 0.9),
+        ),
+    )
+    hub = RecordingHub()
+    records = engine().evaluate(evidence, NOW)
+    assert len(records) >= 3
+    asyncio.run(publish_decisions(hub, records))
+    assert len(hub.sent) == len(records)
+    for _, envelope in hub.sent:
+        _assert_json_primitives(envelope.payload)
+        json.dumps(envelope.payload)  # no debe lanzar
+        assert isinstance(envelope.payload["evaluated_at"], str)
+        for ref in envelope.payload["evidence"]:
+            assert ref["observed_at"] is None or isinstance(ref["observed_at"], str)
