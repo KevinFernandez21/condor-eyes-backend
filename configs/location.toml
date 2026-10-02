@@ -1,0 +1,57 @@
+# Configuración de la localización por zonas (issue #16). Unidades en segundos y dBm.
+
+[freshness]
+# Una observación con más antigüedad que esto (según su timestamp) se descarta como stale.
+max_age_s = 10
+# Tolerancia a relojes adelantados: timestamps más futuros que esto se descartan (clock_skew).
+future_tolerance_s = 2
+# Evidencia más vieja que esto no cuenta para estimar la zona.
+evidence_max_age_s = 15
+# Un nodo sin recibir nada en este tiempo se considera caído (outage).
+node_timeout_s = 30
+# Estado de secuencias/muestras más viejo que esto se purga de memoria.
+retention_s = 300
+
+[smoothing]
+# Ventana de muestras RSSI que se promedian por (tag, nodo). Debe ser <= evidence_max_age_s.
+window_s = 8
+# Media móvil exponencial: 1.0 = solo la última muestra; valores bajos suavizan más.
+alpha = 0.5
+# La zona solo cambia si la nueva supera a la actual por al menos estos dB.
+hysteresis_db = 4
+
+[validation]
+rssi_min_dbm = -127
+rssi_max_dbm = 0
+# Un tag no puede verse en zonas no vecinas con menos de estos segundos de diferencia.
+transition_min_s = 5
+# Solo las lecturas con al menos este RSSI cuentan como presencia para esa regla
+# (un nodo lejano puede oír débilmente un tag de otra zona sin que sea imposible).
+transition_min_rssi_dbm = -80
+
+[confidence]
+# RSSI suavizado que equivale a señal débil (0.0) y fuerte (1.0).
+rssi_floor_dbm = -95
+rssi_strong_dbm = -60
+# Ventaja en dB sobre la segunda zona que equivale a margen pleno.
+margin_full_db = 12
+# Muestras necesarias para evidencia plena.
+samples_full = 3
+# Multiplicador si una zona vecina tiene todos sus nodos caídos.
+outage_penalty = 0.8
+
+[battery]
+low_pct = 20
+
+# Topología de ejemplo (el prototipo se ajusta a la planta real al instalar los nodos).
+[zones.lobby]
+nodes = ["N0001"]
+neighbors = ["pasillo"]
+
+[zones.pasillo]
+nodes = ["N0002", "N0003"]
+neighbors = ["lobby", "laboratorio"]
+
+[zones.laboratorio]
+nodes = ["N0004"]
+neighbors = ["pasillo"]
