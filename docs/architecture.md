@@ -44,6 +44,7 @@ src/pipeline/trt_engine.py        # carga del engine TensorRT FP16 versionado
 src/bus/hub.py                    # contrato tipado: Topic, MetadataEnvelope, validación
 src/bus/memory.py, agentscope_hub.py  # adaptadores (en memoria / Msg de AgentScope 2.x)
 src/agents/runtime.py, handlers.py    # ciclo de vida y lógica por rol
+src/actuation/                     # nodo Pan-Tilt ESP32-S3 (ver docs/pan-tilt.md)
 ```
 
 AgentScope 2.x no incluye `MsgHub`; el bus usa `Msg` y `Agent.observe`. Detalle,

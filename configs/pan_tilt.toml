@@ -1,0 +1,67 @@
+# Límites y parámetros del nodo Pan-Tilt (ESP32-S3 + 2 servos MG995), issue #17.
+#
+# Los ángulos están en grados respecto a la posición neutra mecánica (cámara
+# centrada). Los valores son un punto de partida CONSERVADOR: deben validarse
+# en banco (docs/pan-tilt.md, sección "Procedimiento de banco") y ajustarse al
+# montaje real antes de operar la cámara en campo.
+
+[pan_tilt.limits]
+# Límites mecánicos efectivos (ya descontado un margen sobre el recorrido físico
+# del montaje). Ningún comando los puede exceder, ni en el host ni en el nodo.
+pan_min_deg = -80.0
+pan_max_deg = 80.0
+tilt_min_deg = -30.0
+tilt_max_deg = 45.0
+neutral_pan_deg = 0.0
+neutral_tilt_deg = 0.0
+# Techo duro de velocidad angular (grados/s) que el nodo impone a cualquier comando.
+max_speed_dps = 60.0
+
+[pan_tilt.control]
+# Campo de visión de la cámara: convierte error de imagen normalizado en grados.
+hfov_deg = 90.0
+vfov_deg = 55.0
+# Ganancia proporcional. Elegida en simulación (retardo de visión 100 ms,
+# tiempo muerto 50 ms): kp=0.6 sobrepasa ~17 %, kp=0.4 ~4 %. Revalidar en banco.
+kp = 0.4
+# Zona muerta del error normalizado [-1, 1]: por debajo no se mueve.
+deadband = 0.04
+# Suavizado exponencial del error (1.0 = sin suavizado).
+smoothing_alpha = 0.5
+# Velocidad máxima de seguimiento; debe ser <= limits.max_speed_dps.
+max_speed_dps = 45.0
+control_rate_hz = 20.0
+# Una observación más vieja que esto se trata como objetivo perdido.
+target_timeout_s = 0.5
+# Tras perder el objetivo: se congela; pasado este tiempo vuelve al neutro.
+hold_s = 1.0
+return_to_neutral = true
+neutral_speed_dps = 20.0
+# Cambios de objetivo menores que esto no se reenvían.
+epsilon_deg = 0.05
+
+[pan_tilt.comms]
+# Sin ack en este tiempo el comando se considera perdido.
+ack_timeout_s = 0.25
+# Sin ningún ack válido en este tiempo el enlace se declara perdido y el host
+# deja de emitir movimientos.
+comms_timeout_s = 1.0
+# Watchdog del nodo: sin comandos válidos en este tiempo se congela (FAILSAFE).
+node_watchdog_s = 0.75
+heartbeat_interval_s = 0.25
+estop_retries = 5
+degraded_latency_s = 0.15
+# Cada cuánto se emite la telemetría de salud/métricas por el bus.
+health_report_interval_s = 1.0
+
+[pan_tilt.simulator]
+# Parámetros del simulador determinista. NO son mediciones de hardware.
+one_way_latency_s = 0.01
+jitter_s = 0.0
+dead_time_s = 0.03
+noise_std_deg = 0.1
+drop_prob = 0.0
+# Velocidad física supuesta del servo simulado (dato de hoja, no medido).
+servo_speed_dps = 120.0
+seed = 1234
+physics_dt_s = 0.002
