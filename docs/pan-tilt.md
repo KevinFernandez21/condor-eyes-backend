@@ -38,11 +38,23 @@ Módulos en `src/actuation/`:
 | `simulator.py` | Nodo simulado determinista (latencia, tiempo muerto, ruido) |
 | `scenarios.py` | Lazo cerrado simulado para pruebas y notebooks |
 
-Reglas de arquitectura: por el bus solo viaja metadata serializable
-(`MetadataEnvelope`), nunca frames. Los comandos emitidos se publican en
-`Topic.COMMANDS` (`kind: "ptz.command"`) y la salud/métricas en `Topic.HEALTH`
-(`kind: "ptz.health"`). El adaptador acepta por el bus `ptz.estop` y
-`ptz.release_estop`. No se añadieron topics.
+Reglas de arquitectura: por el bus solo viaja metadata serializable en JSON
+estricto (sin `NaN`/`inf`; hay una prueba que lo verifica), nunca frames.
+La telemetría del adaptador **no** usa `Topic.COMMANDS`, que queda reservado a
+las órdenes entrantes:
+
+| Topic | `kind` | Sentido |
+|---|---|---|
+| `Topic.EVENTS` | `ptz.command` | Salida: comando emitido al nodo |
+| `Topic.EVENTS` | `ptz.alarm` | Salida: alarma crítica (`estop_unconfirmed`, `estop_send_failed`) |
+| `Topic.HEALTH` | `ptz.health` | Salida: salud y métricas |
+| `Topic.COMMANDS` | `ptz.estop` | Entrada: parada de emergencia, de cualquier fuente |
+| `Topic.COMMANDS` | `ptz.release_estop` | Entrada: solo de fuentes autorizadas (`release_sources`, por defecto `supervisor`) |
+
+`source` es una etiqueta dentro del proceso, no una autenticación: la defensa
+real es que solo el supervisor publique `ptz.release_estop`. No se añadieron
+topics. La cola de metadata sin drenar está acotada (1000 mensajes; se descarta
+lo más viejo y se cuenta en `envelopes_dropped`).
 
 ## 2. Protocolo de hardware
 
@@ -65,7 +77,9 @@ CRC-16/CCITT-FALSE (polinomio `0x1021`, init `0xFFFF`, sin reflejo ni xorout)
 sobre los bytes exactos del JSON, es decir, todo lo anterior al **último** `*`.
 Vector de prueba: `CRC("123456789") = 0x29B1`. Una trama con CRC inválido, JSON
 inválido, campo faltante, no numérico o no finito (`NaN`, `Infinity`) se
-**descarta sin ack**. Ángulos con 2 decimales; `seq` es uint16.
+**descarta sin ack**. Ángulos con 2 decimales; `seq` es uint16. Una trama de más de 256 bytes se
+descarta (el receptor serie también descarta líneas más largas y la cola de una
+línea que desbordó el búfer, sin interpretarla como trama nueva).
 
 ### 2.3 Comandos (host -> nodo)
 
@@ -83,8 +97,12 @@ Ejemplo (sin CRC): `{"cmd":"move","pan":12.5,"seq":42,"speed":40.0,"tilt":-3.25}
 Se responde un ack a cada comando con CRC válido:
 
 ```
-{"ack":<seq>,"ms":<ms desde arranque>,"pan":<grados medidos>,"st":"<status>","state":"<estado>","tilt":<grados medidos>}
+{"ack":<seq>,"last":<último seq aceptado>,"ms":<ms desde arranque>,"pan":<grados medidos>,"st":"<status>","state":"<estado>","tilt":<grados medidos>}
 ```
+
+`ms` es uint32 (da la vuelta a los ~49,7 días; el host lo compara en aritmética
+modular). `last` es el último `seq` aceptado por el nodo; es opcional salvo en los
+acks `stale`, donde es **obligatorio** (lo usa el host para re-sincronizarse).
 
 `st`: `ok` (aplicado), `dup` (mismo `seq` que el último aceptado, sin mover),
 `stale` (`seq` anterior, ignorado sin mover), `estop` (rechazado por ESTOP
@@ -107,7 +125,22 @@ activo), `rejected` (campos inválidos). `state`: `idle`, `moving`, `failsafe`,
    válido, el nodo **congela** en la posición actual (`state=failsafe`). No
    vuelve al neutro por sí solo: moverse sin supervisión es peor que quedarse
    quieto. Un comando válido posterior recupera el control (salvo ESTOP).
-5. **Arranque seguro**: al energizar, adjuntar los servos solo después de
+5. **Reinicio del nodo** (brownout): al volver, `ms` reinicia en 0 y el último
+   `seq` se olvida. El host detecta un retroceso grande de `ms` (mayor que
+   `max(500 ms, comms_timeout_s)`), acepta la nueva posición, re-sincroniza el
+   controlador y cuenta `node_reboots`; retrocesos pequeños son acks reordenados
+   y se ignoran. El enclavamiento de ESTOP **del host** se conserva aunque el
+   nodo haya olvidado el suyo.
+6. **Reinicio del host**: el nodo conserva su último `seq` y rechazaría como
+   `stale` todo lo del host reiniciado (que empieza en 0). Mientras el nodo no
+   haya aceptado ningún comando de esta sesión, un ack `stale` con `last` sobre un
+   comando propio hace que el host adopte `seq = last` y reenvíe el neutro de
+   arranque (y un `clear` pendiente) con `seq = last + 1`. No debilita la
+   protección contra repeticiones: nunca retrocede, solo ocurre antes de
+   sincronizar y el siguiente `seq` es siempre posterior al último aceptado. Un
+   `stale` posterior ya sincronizado nunca cambia la secuencia (cuenta
+   `seq_resyncs`).
+7. **Arranque seguro**: al energizar, adjuntar los servos solo después de
    escribir el pulso neutro; objetivo inicial = neutro; sin movimiento hasta el
    primer comando válido.
 
@@ -122,7 +155,9 @@ activo), `rejected` (campos inválidos). `state`: `idle`, `moving`, `failsafe`,
 | Sin acks por `comms_timeout_s` | Salud `lost`: el host deja de emitir movimientos (sigue enviando latidos) |
 | Ack tardío o fuera de orden | No rebobina la posición medida (la telemetría solo avanza por `ms`) |
 | Enlace recuperado / ESTOP liberado | El controlador se re-sincroniza con la posición real antes de seguir |
-| ESTOP | Reintenta con el mismo `seq` hasta confirmación; no hay movimiento hasta `release_estop()` |
+| ESTOP | El host se enclava **antes** de enviar: aunque el transporte falle (la excepción se propaga), no se emiten movimientos. Reintenta con el mismo `seq` hasta confirmación; no hay movimiento hasta `release_estop()` |
+| ESTOP sin confirmar tras `estop_retries` | Alarma explícita: evento `ptz.alarm` (`severity: critical`) en `Topic.EVENTS`, log de error, `alarms` en las métricas y `estop_unconfirmed`; el host sigue enclavado |
+| Fallo del transporte (`TransportError`/`OSError`) | Se **propaga** desde `poll()`/`track()`: el llamador debe tratarlo. No se envía nada y el watchdog del nodo (`node_watchdog_s`) lo congela en sitio |
 
 Todo comando emitido pasa por un recorte final en el adaptador, independiente
 del controlador. Las pruebas de propiedades (cientos de entradas aleatorias,
