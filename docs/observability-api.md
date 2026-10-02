@@ -87,8 +87,9 @@ Semántica:
 - La traza de una decisión incorpora hacia arriba (`via: "upstream"`) la cadena de cada evidencia resuelta, aunque viva en otra correlación. `resolved: false` = el `evidence_id` no está (nunca llegó o fue expulsado).
 - `has_alert` = hay algún mensaje en `events` en la cadena. `end_to_end_ms` = último `events` menos el primer salto; `null` sin alerta.
 - La latencia sale de `created_at` de los envelopes y supone **un reloj común** entre productores. Si algún salto da negativo, `clock_anomaly: true`. La resolución es la del reloj de pared (en Windows ~15 ms; en Linux/Jetson, microsegundos).
-- Acotado: últimas `max_traces` correlaciones (200, LRU por último mensaje) y `max_hops` saltos por correlación (500, `truncated: true` si se pasa). `system.health` no se indexa: cada latido abriría su propia correlación y expulsaría las cadenas que importan.
-- Solo metadata; se pierde al reiniciar (en memoria).
+- Acotado: últimas `max_traces` correlaciones (200, LRU por último mensaje) y `max_hops` saltos por correlación (200, `truncated: true` si se pasa). `system.health` no se indexa: cada latido abriría su propia correlación y expulsaría las cadenas que importan.
+- Solo metadata; se pierde al reiniciar (en memoria). Marcas sin zona horaria se toman como UTC; una marca inválida descarta ese mensaje (contador `TraceStore.skipped`) y nunca provoca un 500.
+- El ordenamiento causal es O(n log n) y los endpoints corren la lectura en un hilo, fuera del loop.
 
 ## Langfuse (opcional)
 
@@ -116,19 +117,32 @@ export LANGFUSE_HOST=http://localhost:3000   # obligatorio (o LANGFUSE_BASE_URL)
 | `event.rule` | otro mensaje en `events` con `source="event"` | ídem, `metadata.decision_engine="rules"`, `llm=false` |
 | `supervisor.command` | comando en `system.commands` con `source="supervisor"` | ídem |
 
-`trace_id` determinista (`create_trace_id(seed=event_id)`): reentregar el mismo mensaje no duplica. Cuando existan agentes ReAct, sus llamadas al modelo se enchufarán como observaciones `generation` hijas del span de decisión (pendiente).
+`trace_id` determinista (`create_trace_id(seed=<event_id filtrado>)`) y el tracer recuerda los últimos 4096 `event_id` exportados: una reentrega del mismo mensaje **no** se exporta de nuevo (sin spans duplicados). Cuando existan agentes ReAct, sus llamadas al modelo se enchufarán como observaciones `generation` hijas del span de decisión (pendiente).
+
+Al apagar, `flush()`/`shutdown()` del SDK corren en un hilo con tope (`close_timeout`, 3 s): con el host de Langfuse inalcanzable no congelan el loop del runtime; si vence el tope se registra una advertencia y se pueden perder trazas pendientes (el hilo sigue hasta que el SDK desista).
 
 ### Filtro de privacidad (`src/tracing/privacy.py`)
 
-Allowlist aplicada **antes** de cualquier envío; lo no nombrado no sale:
+*Deny-by-default*: solo sale lo que una regla nombra; lo demás se descarta y se **cuenta** (`redacted_fields`, solo el número, sin contenido).
 
-- Campos permitidos: `decision_id`, `evaluated_at`, `outcome`, `confidence`, `reason_codes`, `track_ref`, `stream_id`, `zone_id`, `requires_operator`, `type`, `action`, `target`, `state`, `role`, `stage`, `error_type`, `count`, `kind`, `status`, y de `evidence` solo `evidence_id`, `kind`, `role`, `observed_at`, `confidence`, `stream_id`, `zone_id`. Del envelope: `topic`, `source`, `stream_id`, `created_at`, `event_id`, `correlation_id`, `causation_id`.
-- `person_id` solo sale si tiene forma de seudónimo (`p-<hex>`, `anon-<hex>`, `ps-<hex>`, 4-64 hex); cualquier otro valor se reemplaza por `[redacted]`. Los IDs de tag crudos no están en la allowlist y se descartan.
-- Listas de objetos (detecciones, tracks) se reducen a `<campo>_count`. Embeddings, imágenes, recortes de rostro, nombres, cajas y el texto libre `detail` se descartan.
-- Los valores permitidos se revalidan: sin estructuras en campos escalares, sin `data:` URIs, cadenas truncadas a 120.
-- Cubierto por `tests/test_tracing_privacy.py` y `tests/test_tracing_langfuse.py` (payload hostil con embeddings, imagen base64, tag y nombre: nada llega al cliente, ni con un SDK real y exportador en memoria).
+| Campo | Regla |
+|-------|-------|
+| `outcome`, `reason_codes`, `evidence[].kind`, `evidence[].role` | vocabulario cerrado de `fusion.decision` (`DecisionOutcome`, `ReasonCode`, `EvidenceKind`, `EvidenceRole`); otro valor se descarta |
+| `type`, `action`, `target`, `state`, `stage`, `status` | `^[a-z][a-z0-9_]{0,31}$` (sin mayúsculas, espacios, `@`, base64, `data:` ni cadenas largas); `error_type`: `^[A-Za-z][A-Za-z0-9_]{0,63}$` |
+| `confidence` | número finito en [0, 1]; NaN/inf y fuera de rango se descartan |
+| `evaluated_at`, `observed_at`, `created_at` | ISO 8601 válida, re-serializada |
+| `event_id`, `correlation_id`, `causation_id`, `decision_id`, `evidence_id`, `track_ref` | tal cual solo con el formato que generan el bus y la fusión (hex + sufijos `/tracks`, `/events/0`, `restart/<rol>/<n>`, `dec-<n>`); si no, **HMAC** `h-<16 hex>` |
+| `stream_id`, `zone_id`, `source` | etiqueta `^[A-Za-z0-9][A-Za-z0-9_.-]{0,39}$`; si no, HMAC |
+| `person_id` | **siempre HMAC**, nunca en claro (aunque parezca un seudónimo) |
+| `detections`, `tracks` | solo `<campo>_count`; cualquier otra lista de objetos se descarta |
 
-Limitación: el sistema aún no genera seudónimos; `person_id` se asume ya seudonimizado por contrato (docs/evidence-fusion.md). El filtro reconoce la *forma*, no puede probar que el valor sea un hash real.
+Todo lo demás (embeddings, imágenes, recortes de rostro, tag IDs crudos, nombres, cajas, `detail`) se descarta. La cadena causal que viaja en `input.chain` pasa por el mismo filtro (`PrivacyFilter.hop`).
+
+HMAC = SHA-256 con una clave **local**: `TRACING_HASH_KEY` o, si falta, una aleatoria por proceso (los hashes no son estables entre reinicios). Con la misma clave el mismo valor da el mismo hash, así que las relaciones entre saltos se conservan en Langfuse sin exponer el valor. Quien tenga la clave puede reconocer valores conocidos; no la envíes a Langfuse.
+
+Limitación: el proyecto aún no tiene un seudonimizador propio, así que no hay un "formato de seudónimo" que reconocer; un formato validado no probaría seudonimia. Por eso se envía el HMAC y no el id. Los ids que pasan tal cual (formato de sistema, etiquetas de cámara/zona) se asumen no personales: un `stream_id` como `employee-4411` pasaría la regla de etiqueta.
+
+Cubierto por `tests/test_tracing_privacy.py` y `tests/test_tracing_langfuse.py` (payloads hostiles con embeddings de 512 floats en `reason_codes`, PNG base64 en `type`/`target`, `Data:` en mayúsculas, ids tipo `employee-4411@corp`, NaN/inf; también con el SDK real y un exportador en memoria).
 
 ## WebSocket `/ws`
 

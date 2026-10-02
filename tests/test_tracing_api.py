@@ -52,6 +52,45 @@ def test_traces_exige_token_y_valida_limit():
     assert client.get("/traces?limit=0", headers=H).status_code == 422
 
 
+def test_stop_no_bloquea_el_loop_si_langfuse_no_responde():
+    import asyncio
+    import time
+
+    from comms import ObservabilityCommsHandler
+
+    class Hanging:
+        closed = False
+
+        def on_message(self, topic, data):
+            pass
+
+        def close(self):
+            time.sleep(1.5)  # host inalcanzable: flush/shutdown se cuelgan
+            self.closed = True
+
+    async def run():
+        handler = ObservabilityCommsHandler(InMemoryHub(), port=0, close_timeout=0.2)
+        handler._tracer = Hanging()
+        ticks = 0
+
+        async def heartbeat():
+            nonlocal ticks
+            while True:
+                await asyncio.sleep(0.02)
+                ticks += 1
+
+        hb = asyncio.create_task(heartbeat())
+        t0 = time.perf_counter()
+        await handler.stop()
+        elapsed = time.perf_counter() - t0
+        hb.cancel()
+        return elapsed, ticks
+
+    elapsed, ticks = asyncio.run(run())
+    assert elapsed < 1.0  # respetó el timeout
+    assert ticks >= 5  # el loop siguió vivo mientras tanto
+
+
 def test_sin_almacen_no_hay_rutas_de_trazas():
     tap = BusTap(InMemoryHub())
     client = TestClient(create_app(TapSystemView(tap)))

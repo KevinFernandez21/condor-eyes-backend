@@ -44,3 +44,8 @@ explicit = true
 pythonpath = ["src"]
 testpaths = ["tests"]
 asyncio_mode = "auto"
+
+[[tool.mypy.overrides]]
+# langfuse es un extra opcional: sin él mypy no debe fallar.
+module = ["langfuse", "langfuse.*"]
+ignore_missing_imports = true
