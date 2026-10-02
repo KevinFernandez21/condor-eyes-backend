@@ -85,6 +85,17 @@ def sharpness(img: np.ndarray, box: Sequence[float]) -> float:
     )
 
 
+def write_audit(path: str | Path, action: str, **kw: Any) -> None:
+    """Añade una línea JSONL al log de auditoría. Nunca debe recibir datos biométricos."""
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("a", encoding="utf-8") as f:
+        f.write(
+            json.dumps({"t": time.time(), "action": action, **kw}, ensure_ascii=False)
+            + "\n"
+        )
+
+
 class EnrollmentStore:
     """Plantillas por persona en un archivo JSON local (fuera de Git) + auditoría."""
 
@@ -98,14 +109,7 @@ class EnrollmentStore:
             self._data = json.loads(self.path.read_text(encoding="utf-8"))
 
     def _audit(self, action: str, **kw: Any) -> None:
-        self.audit_path.parent.mkdir(parents=True, exist_ok=True)
-        with self.audit_path.open("a", encoding="utf-8") as f:
-            f.write(
-                json.dumps(
-                    {"t": time.time(), "action": action, **kw}, ensure_ascii=False
-                )
-                + "\n"
-            )
+        write_audit(self.audit_path, action, **kw)
 
     def _save(self) -> None:
         self.path.parent.mkdir(parents=True, exist_ok=True)
@@ -170,16 +174,23 @@ class EnrollmentStore:
 
 class Verifier:
     def __init__(
-        self, engine: Engine, store: EnrollmentStore, policy: VerifyPolicy | None = None
+        self,
+        engine: Engine,
+        store: EnrollmentStore | None = None,
+        policy: VerifyPolicy | None = None,
     ) -> None:
         self.engine = engine
         self.store = store
         self.policy = policy or VerifyPolicy()
 
-    def embed_one(
+    def locate_one(
         self, img: Any
-    ) -> tuple[VerifyStatus | None, np.ndarray | None, dict[str, Any]]:
-        """Valida la entrada y devuelve el embedding de la única cara, o el motivo del fallo."""
+    ) -> tuple[VerifyStatus | None, tuple[np.ndarray, Any] | None, dict[str, Any]]:
+        """Valida la entrada y devuelve `(imagen_escalada, cara)` de la única cara, o el motivo.
+
+        Separa detección y control de calidad del embedding para poder agrupar
+        embeddings en lote (p. ej. contra una API en la nube).
+        """
         if (
             not isinstance(img, np.ndarray)
             or img.ndim != 3
@@ -217,7 +228,16 @@ class Verifier:
         q["quality_issues"] = low
         if low:
             return VerifyStatus.INCONCLUSIVE, None, q
-        return None, self.engine.embed(scaled, f), q
+        return None, (scaled, f), q
+
+    def embed_one(
+        self, img: Any
+    ) -> tuple[VerifyStatus | None, np.ndarray | None, dict[str, Any]]:
+        """Valida la entrada y devuelve el embedding de la única cara, o el motivo del fallo."""
+        status, located, q = self.locate_one(img)
+        if status is not None or located is None:
+            return status, None, q
+        return None, self.engine.embed(*located), q
 
     def verify(self, img: Any, now: float | None = None) -> VerificationResult:
         p = self.policy
@@ -226,6 +246,8 @@ class Verifier:
             return VerificationResult(
                 status or VerifyStatus.INVALID_INPUT, threshold=p.threshold, evidence=ev
             )
+        if self.store is None:
+            raise RuntimeError("verify() necesita un EnrollmentStore")
         ids, mat = self.store.templates(now)
         if not ids:
             return VerificationResult(
