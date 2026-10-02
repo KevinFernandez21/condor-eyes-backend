@@ -231,6 +231,11 @@ class RoleWorker:
     def idle(self) -> bool:
         return self._busy == 0 and all(s.pending == 0 for s in self._subscriptions)
 
+    @property
+    def pending(self) -> int:
+        """Mensajes encolados en las suscripciones del rol (profundidad de cola)."""
+        return sum(s.pending for s in self._subscriptions)
+
     def _on_consumer_done(self, task: asyncio.Task[None]) -> None:
         """Si un consumidor muere sin que se esté parando, el rol queda FAILED."""
         if task.cancelled() or self.state is not WorkerState.RUNNING:
@@ -480,6 +485,10 @@ class AgentRuntime:
     def health(self) -> dict[str, dict[str, Any]]:
         """Salud por rol/instancia; únicamente metadata operativa."""
         return {worker.name: worker.health() for worker in self._workers}
+
+    def queue_depths(self) -> dict[str, int]:
+        """Mensajes pendientes por rol/instancia; solo metadata operativa."""
+        return {worker.name: worker.pending for worker in self._workers}
 
     async def publish_health(self) -> None:
         """Publica la salud de cada rol en ``Topic.HEALTH``."""
