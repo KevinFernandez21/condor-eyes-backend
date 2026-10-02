@@ -1,5 +1,4 @@
 """Tests del prototipo de armas: conversión/filtrado, config, dataset y smoke de video."""
-
 from __future__ import annotations
 
 import json
@@ -30,28 +29,17 @@ NAMES = {0: "person", 1: "handgun"}
 
 # --- conversión y filtrado de resultados -----------------------------------
 
-
 def test_boxes_to_dets_converts_and_sorts_by_conf():
     dets = boxes_to_dets(
-        [[0, 0, 10, 10], [5, 5, 20, 20]],
-        [0.0, 1.0],
-        [0.4, 0.9],
-        NAMES,
+        [[0, 0, 10, 10], [5, 5, 20, 20]], [0.0, 1.0], [0.4, 0.9], NAMES,
     )
     assert [d["label"] for d in dets] == ["handgun", "person"]
-    assert dets[0] == {
-        "xyxy": [5.0, 5.0, 20.0, 20.0],
-        "cls": 1,
-        "conf": 0.9,
-        "label": "handgun",
-    }
+    assert dets[0] == {"xyxy": [5.0, 5.0, 20.0, 20.0], "cls": 1, "conf": 0.9, "label": "handgun"}
 
 
 def test_boxes_to_dets_filters_by_conf_and_class():
     xyxy = [[0, 0, 1, 1]] * 3
-    dets = boxes_to_dets(
-        xyxy, [1, 1, 0], [0.2, 0.6, 0.95], NAMES, min_conf=0.5, keep=["handgun"]
-    )
+    dets = boxes_to_dets(xyxy, [1, 1, 0], [0.2, 0.6, 0.95], NAMES, min_conf=0.5, keep=["handgun"])
     assert len(dets) == 1 and dets[0]["conf"] == pytest.approx(0.6)
 
 
@@ -73,7 +61,6 @@ def test_latency_stats_percentiles():
 
 # --- config ----------------------------------------------------------------
 
-
 def test_load_config_toml_and_overrides(tmp_path: Path):
     p = tmp_path / "c.toml"
     p.write_text('[detector]\nmodel = "m.pt"\nconf = 0.25\n', encoding="utf-8")
@@ -86,7 +73,7 @@ def test_repo_config_is_valid():
     assert cfg.weapon_classes == ["weapon"] and "weapon" in cfg.classes
 
 
-@pytest.mark.parametrize("bad", ["conf = 1.5", "imgsz = 600", "foo = 1"])
+@pytest.mark.parametrize("bad", ['conf = 1.5', 'imgsz = 600', 'foo = 1'])
 def test_load_config_rejects_invalid(tmp_path: Path, bad: str):
     p = tmp_path / "c.toml"
     p.write_text(f"[detector]\n{bad}\n", encoding="utf-8")
@@ -95,7 +82,6 @@ def test_load_config_rejects_invalid(tmp_path: Path, bad: str):
 
 
 # --- detector con modelo simulado (sin GPU ni pesos) ----------------------
-
 
 class _FakeTensor(list):
     def tolist(self):
@@ -130,12 +116,9 @@ def test_firearm_detector_infer_uses_config():
 
 # --- dataset COCO -> YOLO ---------------------------------------------------
 
-
 def test_coco_bbox_to_yolo_normalizes_and_clips():
     assert coco_bbox_to_yolo([0, 0, 50, 100], 100, 200) == (0.25, 0.25, 0.5, 0.5)
-    assert coco_bbox_to_yolo([90, 0, 20, 10], 100, 100) == pytest.approx(
-        (0.95, 0.05, 0.1, 0.1)
-    )
+    assert coco_bbox_to_yolo([90, 0, 20, 10], 100, 100) == pytest.approx((0.95, 0.05, 0.1, 0.1))
     assert coco_bbox_to_yolo([200, 200, 5, 5], 100, 100) is None
 
 
@@ -176,13 +159,8 @@ def _yolo_src(tmp_path: Path) -> Path:
     (src / "labels").mkdir()
     for scene, n in (("Scene1", 3), ("Scene2", 2), ("Scene3", 2)):
         for i in range(1, n + 1):
-            cv2.imwrite(
-                str(src / "images" / f"{scene}_{i}.png"),
-                np.zeros((8, 8, 3), dtype="uint8"),
-            )
-            (src / "labels" / f"{scene}_{i}.txt").write_text(
-                "0 0.5 0.5 0.2 0.2\n1 0.4 0.4 0.1 0.1\n"
-            )
+            cv2.imwrite(str(src / "images" / f"{scene}_{i}.png"), np.zeros((8, 8, 3), dtype="uint8"))
+            (src / "labels" / f"{scene}_{i}.txt").write_text("0 0.5 0.5 0.2 0.2\n1 0.4 0.4 0.1 0.1\n")
     return src
 
 
@@ -192,47 +170,28 @@ def test_scene_of():
 
 def test_split_yolo_by_scene_keeps_scenes_apart(tmp_path: Path):
     out = tmp_path / "out"
-    report = split_yolo_by_scene(
-        _yolo_src(tmp_path), out, ["person", "weapon"], ["Scene2"], ["Scene3"]
-    )
+    report = split_yolo_by_scene(_yolo_src(tmp_path), out, ["person", "weapon"], ["Scene2"], ["Scene3"])
     by = {s["split"]: s for s in report["splits"]}
-    assert (by["train"]["images"], by["val"]["images"], by["test"]["images"]) == (
-        3,
-        2,
-        2,
-    )
-    assert by["val"]["scenes"] == ["Scene2"] and by["test"]["per_class"] == {
-        "person": 2,
-        "weapon": 2,
-    }
-    assert sorted(p.name for p in (out / "labels/test").iterdir()) == [
-        "Scene3_1.txt",
-        "Scene3_2.txt",
-    ]
+    assert (by["train"]["images"], by["val"]["images"], by["test"]["images"]) == (3, 2, 2)
+    assert by["val"]["scenes"] == ["Scene2"] and by["test"]["per_class"] == {"person": 2, "weapon": 2}
+    assert sorted(p.name for p in (out / "labels/test").iterdir()) == ["Scene3_1.txt", "Scene3_2.txt"]
     assert "test: images/test" in (out / "data.yaml").read_text()
 
 
-@pytest.mark.parametrize(
-    ("val", "test"), [(["Scene2"], ["Scene2"]), (["Nope"], ["Scene3"])]
-)
+@pytest.mark.parametrize(("val", "test"), [(["Scene2"], ["Scene2"]), (["Nope"], ["Scene3"])])
 def test_split_yolo_by_scene_rejects_bad_scenes(tmp_path: Path, val, test):
     with pytest.raises(ValueError):
-        split_yolo_by_scene(
-            _yolo_src(tmp_path), tmp_path / "o", ["person", "weapon"], val, test
-        )
+        split_yolo_by_scene(_yolo_src(tmp_path), tmp_path / "o", ["person", "weapon"], val, test)
 
 
 def test_split_yolo_by_scene_rejects_out_of_range_class(tmp_path: Path):
     src = _yolo_src(tmp_path)
     (src / "labels" / "Scene1_1.txt").write_text("5 0.5 0.5 0.1 0.1\n")
     with pytest.raises(ValueError):
-        split_yolo_by_scene(
-            src, tmp_path / "o", ["person", "weapon"], ["Scene2"], ["Scene3"]
-        )
+        split_yolo_by_scene(src, tmp_path / "o", ["person", "weapon"], ["Scene2"], ["Scene3"])
 
 
 # --- smoke: video corto de punta a punta ------------------------------------
-
 
 class _ScriptedDetector:
     """Arma en los frames pares, nada en los impares (escena negativa)."""
