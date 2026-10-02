@@ -1,0 +1,25 @@
+# Fusión de evidencia (issue #15). Documentación de cada umbral: docs/evidence-fusion.md.
+# Todas las ventanas están en segundos; todas las confianzas, en [0, 1].
+# Estos valores son un punto de partida: hay que recalibrarlos con datos del sitio.
+[fusion]
+# Diferencia máxima entre una pista y la evidencia (rostro, tag, re-ID) para correlacionarlas.
+time_window_s = 5.0
+
+# Antigüedad máxima respecto al instante de evaluación; pasada, la evidencia es obsoleta
+# y nunca cuenta como autorización.
+track_max_age_s = 3.0
+identity_max_age_s = 10.0
+location_max_age_s = 15.0
+reid_max_age_s = 30.0
+
+# Tolerancia a relojes desfasados; evidencia fechada más allá de ahora + este valor es inválida.
+max_clock_skew_s = 2.0
+
+# Confianza mínima por fuente para considerarla evidencia utilizable.
+min_track_confidence = 0.5
+min_identity_score = 0.65     # alineado con el umbral de verificación facial (issue #10)
+min_location_confidence = 0.6
+min_reid_confidence = 0.7
+
+# El mínimo de las confianzas que contribuyen debe alcanzar este valor para corroborar.
+min_decision_confidence = 0.6
