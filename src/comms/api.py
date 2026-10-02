@@ -310,6 +310,7 @@ def create_app(
         return {"decisions": view.decisions(limit, stream_id=stream_id, zone=zone)}
 
     app.include_router(router)
+    app.state.ws_clients_count = lambda: len(state.clients)  # para pruebas
 
     @app.websocket("/ws")
     async def ws_endpoint(
@@ -372,15 +373,19 @@ def create_app(
             for task in (sender, receiver):
                 if task is not None and not task.done():
                     task.cancel()
-            await asyncio.gather(
-                *(t for t in (sender, receiver) if t is not None), return_exceptions=True
-            )
-            state.clients.discard(channel)
-            state.dropped_closed += channel.dropped
             try:
-                await websocket.close()
-            except Exception:  # noqa: BLE001, S110 - ya cerrado por el cliente
-                pass
+                await asyncio.gather(
+                    *(t for t in (sender, receiver) if t is not None), return_exceptions=True
+                )
+                try:
+                    await websocket.close()
+                except Exception:  # noqa: BLE001, S110 - ya cerrado por el cliente
+                    pass
+            finally:
+                # Lo último que hace el manejador: tras esto ya no queda ningún await,
+                # así que ws_clients == 0 indica que la sesión terminó del todo.
+                state.dropped_closed += channel.dropped
+                state.clients.discard(channel)
 
     return app
 

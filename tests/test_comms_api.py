@@ -1,9 +1,9 @@
 """Pruebas HTTP/WebSocket de la API de observabilidad."""
 
 import json
-import time
 
 import pytest
+from _comms_ws import wait_until, ws_session
 from starlette.testclient import TestClient
 
 from bus import InMemoryHub, MetadataEnvelope, Topic
@@ -27,16 +27,6 @@ class FakeRuntime:
 
     def queue_depths(self):
         return {"tracker": 4, "comms": 0}
-
-
-def wait_until(condition, timeout: float = 5.0) -> bool:
-    """Reintenta ``condition`` hasta que sea verdadera o venza ``timeout``."""
-    deadline = time.monotonic() + timeout
-    while time.monotonic() < deadline:
-        if condition():
-            return True
-        time.sleep(0.01)
-    return condition()
 
 
 def make_view():
@@ -148,7 +138,7 @@ def test_solo_lectura(client_tap):
 def test_ws_recibe_hello_y_envelopes_filtrados_por_topico():
     tap, view = make_view()
     client = TestClient(create_app(view))
-    with client.websocket_connect("/ws?topics=events") as ws:
+    with ws_session(client, "/ws?topics=events") as ws:
         hello = ws.receive_json()
         assert hello["type"] == "hello"
         assert hello["topics"] == ["events"]
@@ -163,7 +153,7 @@ def test_ws_recibe_hello_y_envelopes_filtrados_por_topico():
 def test_ws_sin_filtro_recibe_todos_los_topicos():
     tap, view = make_view()
     client = TestClient(create_app(view))
-    with client.websocket_connect("/ws") as ws:
+    with ws_session(client, "/ws") as ws:
         assert len(ws.receive_json()["topics"]) == len(list(Topic))
         tap.record(Topic.TRACKS, e({"a": 1}, event_id="t1"))
         assert ws.receive_json()["data"]["event_id"] == "t1"
@@ -179,7 +169,7 @@ def test_ws_topico_invalido_se_rechaza():
 def test_ws_filtro_por_stream():
     tap, view = make_view()
     client = TestClient(create_app(view))
-    with client.websocket_connect("/ws?topics=events&stream_id=cam-2") as ws:
+    with ws_session(client, "/ws?topics=events&stream_id=cam-2") as ws:
         ws.receive_json()
         tap.record(Topic.EVENTS, e({"t": 1}, "cam-1", event_id="a"))
         tap.record(Topic.EVENTS, e({"t": 1}, "cam-2", event_id="b"))
@@ -189,7 +179,7 @@ def test_ws_filtro_por_stream():
 def test_ws_desconexion_quita_el_oyente():
     tap, view = make_view()
     client = TestClient(create_app(view))
-    with client.websocket_connect("/ws") as ws:
+    with ws_session(client, "/ws") as ws:
         ws.receive_json()
         assert wait_until(lambda: client.get("/health").json()["ws_clients"] == 1)
     # La limpieza ocurre en el hilo del servidor: se espera con tope, sin sleeps fijos.
@@ -219,9 +209,9 @@ def test_token_requerido_en_http_y_ws():
     assert client.get("/agents", headers={"X-API-Token": "s3cret"}).status_code == 200
     with pytest.raises(Exception), client.websocket_connect("/ws") as ws:  # noqa: B017
         ws.receive_json()
-    with client.websocket_connect("/ws?token=s3cret") as ws:
+    with ws_session(client, "/ws?token=s3cret") as ws:
         assert ws.receive_json()["type"] == "hello"
-    with client.websocket_connect("/ws", headers={"Authorization": "Bearer s3cret"}) as ws:
+    with ws_session(client, "/ws", headers={"Authorization": "Bearer s3cret"}) as ws:
         assert ws.receive_json()["type"] == "hello"
 
 

@@ -4,6 +4,7 @@ import inspect
 import threading
 
 import pytest
+from _comms_ws import ws_session
 from starlette.testclient import TestClient
 
 from bus import InMemoryHub, MetadataEnvelope, Topic
@@ -39,16 +40,16 @@ def test_ws_origin_local_y_ausente_se_permiten():
     _, view = make_view()
     client = TestClient(create_app(view))  # TestClient sirve en el puerto 80
     for origin in ("http://localhost", "http://127.0.0.1", "http://[::1]", "http://localhost:80"):
-        with client.websocket_connect("/ws", headers={"Origin": origin}) as ws:
+        with ws_session(client, "/ws", headers={"Origin": origin}) as ws:
             assert ws.receive_json()["type"] == "hello"
-    with client.websocket_connect("/ws") as ws:  # cliente no navegador: sin Origin
+    with ws_session(client, "/ws") as ws:  # cliente no navegador: sin Origin
         assert ws.receive_json()["type"] == "hello"
 
 
 def test_ws_allowed_origins_configurable():
     _, view = make_view()
     client = TestClient(create_app(view, allowed_origins=["https://dash.example"]))
-    with client.websocket_connect("/ws", headers={"Origin": "https://dash.example"}) as ws:
+    with ws_session(client, "/ws", headers={"Origin": "https://dash.example"}) as ws:
         assert ws.receive_json()["type"] == "hello"
     denied(client, "/ws", headers={"Origin": "http://localhost"})
 
@@ -62,14 +63,14 @@ def test_token_no_ascii_no_provoca_500_ni_excepcion():
     client2 = TestClient(create_app(view, token="sécret"))
     resp = client2.get("/agents", headers={b"x-api-token": "sécret".encode()})
     assert resp.status_code == 200
-    with client2.websocket_connect("/ws?token=sécret") as ws:
+    with ws_session(client2, "/ws?token=sécret") as ws:
         assert ws.receive_json()["type"] == "hello"
 
 
 def test_ws_token_por_subprotocolo():
     _, view = make_view()
     client = TestClient(create_app(view, token="s3cret"))
-    with client.websocket_connect("/ws", subprotocols=["token.s3cret"]) as ws:
+    with ws_session(client, "/ws", subprotocols=["token.s3cret"]) as ws:
         assert ws.accepted_subprotocol == "token.s3cret"
         assert ws.receive_json()["type"] == "hello"
     denied(client, "/ws", subprotocols=["token.mal"])
@@ -88,7 +89,7 @@ def test_docs_y_openapi_deshabilitados_con_token_y_abiertos_sin_el():
 def test_ws_tolera_frames_binarios_del_cliente():
     tap, view = make_view()
     client = TestClient(create_app(view))
-    with client.websocket_connect("/ws") as ws:
+    with ws_session(client, "/ws") as ws:
         ws.receive_json()
         ws.send_bytes(b"\x00\x01")
         ws.send_text("hola")
