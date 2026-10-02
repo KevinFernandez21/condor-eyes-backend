@@ -34,6 +34,8 @@ class TagObservation:
 class RejectReason(StrEnum):
     """Motivo por el que una observación se descarta."""
 
+    MALFORMED = "malformed"
+    UNENROLLED_TAG = "unenrolled_tag"
     UNKNOWN_NODE = "unknown_node"
     IMPOSSIBLE_VALUE = "impossible_value"
     STALE = "stale"
