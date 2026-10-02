@@ -10,8 +10,8 @@ from typing import Any
 @dataclass
 class FirearmConfig:
     # .pt entrenado (laptop) o engine TensorRT FP16 (Jetson, a futuro).
-    model: str = "runs/firearm/yolov8n_firearm_v2/weights/best.pt"
-    conf: float = 0.35
+    model: str = "runs/firearm/yolov8n_firearm_v3/weights/best.pt"
+    conf: float = 0.475
     iou: float = 0.5
     imgsz: int = 640
     # "0" = primera GPU CUDA, "cpu" para forzar CPU.
