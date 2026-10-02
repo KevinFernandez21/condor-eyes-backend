@@ -23,6 +23,7 @@ from .models import (
     TrackObservation,
     ZoneRule,
 )
+from .service import publish_decisions
 
 __all__ = [
     "DecisionOutcome",
@@ -45,5 +46,6 @@ __all__ = [
     "ZoneRule",
     "identity_from_envelope",
     "load_fusion_config",
+    "publish_decisions",
     "reid_from_envelope",
 ]
