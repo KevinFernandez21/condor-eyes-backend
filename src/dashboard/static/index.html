@@ -1,0 +1,60 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Condor Eye · Sistema</title>
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+  <header class="topbar">
+    <h1>Condor Eye <span class="muted">· sistema multiagente</span></h1>
+    <div class="pills" id="pills" aria-live="polite"></div>
+  </header>
+  <div id="banner" class="banner" role="alert" hidden></div>
+
+  <section class="card" aria-labelledby="h-health">
+    <h2 id="h-health">Salud</h2>
+    <div id="health" class="health"></div>
+  </section>
+
+  <main class="grid">
+    <section class="card span-2" aria-labelledby="h-graph">
+      <h2 id="h-graph">Grafo de agentes</h2>
+      <div class="graph-scroll"><svg id="graph" role="img" aria-label="Grafo de agentes y tópicos"></svg></div>
+      <div class="legend" id="legend"></div>
+      <div class="table-wrap"><table id="edges"><thead><tr>
+        <th>Tópico</th><th>Origen → destino</th><th class="num">msg/s</th><th class="num">descartes</th>
+      </tr></thead><tbody></tbody></table></div>
+    </section>
+
+    <section class="card" aria-labelledby="h-alerts">
+      <h2 id="h-alerts">Alertas de fusión</h2>
+      <div id="alerts" class="stack"></div>
+    </section>
+
+    <section class="card span-2" aria-labelledby="h-feed">
+      <h2 id="h-feed">Mensajes en vivo</h2>
+      <div class="filters">
+        <div id="topic-chips" class="chips" role="group" aria-label="Filtrar por tópico"></div>
+        <input id="feed-q" type="search" placeholder="Buscar en el resumen…" aria-label="Buscar en el feed">
+        <button id="corr-clear" type="button" hidden></button>
+      </div>
+      <ol id="feed" class="feed"></ol>
+    </section>
+
+    <section class="card" aria-labelledby="h-site">
+      <h2 id="h-site">Mapa de sitio</h2>
+      <div id="site"></div>
+    </section>
+
+    <section class="card" aria-labelledby="h-cam">
+      <h2 id="h-cam">Cámara</h2>
+      <div id="camera" class="camera"></div>
+    </section>
+  </main>
+
+  <footer class="muted foot">Solo metadata. Las identidades se muestran tal como llegan (seudonimizadas); no se renderizan imágenes ni embeddings.</footer>
+  <script src="/static/app.js"></script>
+</body>
+</html>
