@@ -234,9 +234,8 @@ def run(
     probe_images: Sequence[int],
     target_far: float,
 ) -> dict[str, Any]:
-    assert not set(val_subjects) & set(test_subjects), (
-        "fuga de identidad entre val y test"
-    )
+    if set(val_subjects) & set(test_subjects):
+        raise ValueError("fuga de identidad entre val y test")
     enroll_imgs = range(ENROLL_IMAGES)
     out_q = calibrate_sharpness(verifier, policy, root, val_subjects, probe_images)
     pert = perturbations()

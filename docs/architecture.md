@@ -74,6 +74,7 @@ garantías y diagrama de secuencia en [agentscope-runtime.md](agentscope-runtime
 | ARCH-007 | Decidido | Precisión: FP16 en todos los modelos (detector, re-ID, YuNet, SFace); INT8 solo con calibración documentada; FP32 prohibido en producción; única excepción registrada: la herramienta de evaluación de #10 en la laptop (OpenCV DNN FP32), no producción (SFace FP16 equivale a FP32: coseno ≥ 0,9998) |
 | ARCH-008 | Decidido | Entrada del detector 640 por defecto en multistream; 1280 solo con N ≤ 2 cámaras |
 | ARCH-009 | Pendiente | Validar el presupuesto de #23 en la Jetson con TensorRT FP16 + NVDEC (checklist en `docs/edge-budget.md`) |
+| ARCH-010 | Pendiente | Identidad facial: SFace local por defecto; Gemini Embedding 2 (nube) solo si iguala a SFace en identidad y con consentimiento de nube (issue #27, ver `docs/reports/face-embedding-search.md`) |
 
 ## 6. Alternativas descartadas
 
