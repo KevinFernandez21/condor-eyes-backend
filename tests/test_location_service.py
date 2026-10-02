@@ -241,3 +241,55 @@ def test_publish_reports_uses_location_topic():
 def test_location_topic_is_appended_and_carries_no_video():
     assert list(Topic)[-1] is Topic.LOCATION
     assert "frame" not in Topic.LOCATION.value and "video" not in Topic.LOCATION.value
+
+
+@pytest.mark.parametrize(
+    "raw",
+    ["[" * 100_000, '{"a":' * 100_000, None, 42, b"\xff\xfe", "x" * 5000],
+    ids=["corchetes", "objetos", "none", "int", "utf8-invalido", "grande"],
+)
+def test_hostile_json_never_raises_and_is_counted_as_malformed(raw):
+    service = make_service()
+    result = service.ingest_json(raw, at(0))
+    assert not result.accepted and result.reason is RejectReason.MALFORMED
+    assert service.stats[RejectReason.MALFORMED] == 1
+
+
+@pytest.mark.parametrize(
+    "raw", ["x" * 26, None, 7, b""], ids=["str", "none", "int", "vacio"]
+)
+def test_hostile_binary_never_raises(raw):
+    service = make_service()
+    result = service.ingest_binary(raw, at(0))
+    assert result.reason is RejectReason.MALFORMED
+
+
+def test_directly_built_lowercase_tag_is_normalized():
+    service = make_service()
+    lower = obs(tag=TAG.lower(), t=0)
+    assert service.ingest(lower, at(0.1)).accepted
+    assert service.estimate(TAG, at(0.5)).zone_id == "lobby"
+    assert TAG.lower() not in service._estimator.known_tags()
+
+
+def test_every_published_envelope_payload_is_strict_json():
+    service = make_service()
+    run_sim(service, ZoneNodeSimulator(NODE_POSITIONS), TAG, (1.0, 0.0), [0, 1, 2])
+    reports = service.reports(at(2.5)) + service.reports(at(100))
+    assert {r.estimate.status for r in reports} == {
+        EstimateStatus.LOCATED,
+        EstimateStatus.UNKNOWN,
+    }
+
+    def check(value):
+        assert value is None or type(value) in (str, int, float, bool, list, dict)
+        if isinstance(value, dict):
+            assert all(type(k) is str for k in value)
+            [check(v) for v in value.values()]
+        elif isinstance(value, list):
+            [check(v) for v in value]
+
+    for report in reports:
+        payload = to_envelope(report).payload
+        json.dumps(payload, allow_nan=False)
+        check(dict(payload))

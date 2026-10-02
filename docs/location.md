@@ -87,6 +87,14 @@ Limitaciones conocidas:
 - El anti-replay es por contador, **sin autenticación criptográfica**: un
   atacante que adelante la `seq` podría bloquear a un tag. Mejora futura: HMAC
   por tag sobre el payload.
+- Un único paquete con `seq` unos 2^31 por delante (o forjado) fija ese valor
+  como "última secuencia" del par (tag, nodo): los paquetes legítimos siguientes
+  se rechazan como `replay` hasta que expire el estado (`retention_s`). Es una
+  limitación del contador sin autenticación por tag; la mitigación real es el
+  HMAC por tag. Por eso `retention_s` debe ser >= `max_age_s`.
+- Entradas hostiles: JSON de más de `MAX_JSON_BYTES` (1024), tipos distintos de
+  `str`/`bytes` o anidamiento profundo se devuelven como `malformed`; el
+  ingestor nunca lanza por datos externos.
 - Un tag que se reinicia vuelve a `seq` baja y se rechaza como `replay` hasta
   que supere la última vista o pase `retention_s`. Mitigación futura: campo de
   época de arranque.
@@ -141,6 +149,10 @@ si el estado es `unknown`.
 - El mapeo tag -> persona vive detrás de `PersonnelRepository` (reemplazable:
   SQLite, LDAP, API de RR. HH.). Todo acceso exige un `Principal` con el alcance
   `personnel:read`; sin él se lanza `AccessDenied` y se audita el intento.
+- `Principal` y sus alcances son control de acceso a nivel de contrato (el
+  repositorio exige el alcance), **no autenticación**: no verifican quién es el
+  llamador. La autenticación real (tokens, mTLS, identidad del servicio) debe
+  hacerla la capa que construye el `Principal`.
 - IDs de tag y de persona nunca van en claro a logs ni al bus: se usan
   seudónimos HMAC-SHA256 con clave secreta (`Pseudonymizer`). `repr` de
   `TagObservation` y `PersonnelRecord` oculta los datos personales.

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 import tomllib
 from collections.abc import Mapping
 from dataclasses import dataclass, field
@@ -72,6 +73,8 @@ def _number(section: Mapping[str, Any], name: str, key: str, default: float) -> 
     value = section.get(key, default)
     if isinstance(value, bool) or not isinstance(value, int | float):
         raise ConfigError(f"[{name}] {key} debe ser numérico")
+    if not math.isfinite(value):
+        raise ConfigError(f"[{name}] {key} debe ser un número finito")
     return float(value)
 
 
@@ -190,6 +193,11 @@ def _validate(cfg: LocationConfig) -> None:
             raise ConfigError(f"{key} no puede ser negativo")
     if not 0 < cfg.smoothing_alpha <= 1:
         raise ConfigError("alpha debe estar en el intervalo (0, 1]")
+    if cfg.retention_s < cfg.max_age_s:
+        raise ConfigError(
+            "retention_s no puede ser menor que max_age_s "
+            "(se reabriría la ventana de replay)"
+        )
     if cfg.smoothing_window_s > cfg.evidence_max_age_s:
         raise ConfigError("window_s no puede superar evidence_max_age_s")
     if cfg.rssi_floor_dbm >= cfg.rssi_strong_dbm:

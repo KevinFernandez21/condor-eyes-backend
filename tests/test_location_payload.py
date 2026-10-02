@@ -143,3 +143,40 @@ def test_binary_encode_requires_numeric_node_id():
 
 def test_repr_does_not_leak_tag_id():
     assert "A1B2C3D4E5F6" not in repr(make_obs())
+
+
+# --- entradas hostiles -------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "raw",
+    ["[" * 100_000, '{"a":' * 100_000, b"[" * 100_000, "x" * 100_000],
+    ids=["corchetes", "objetos-anidados", "corchetes-bytes", "sobredimensionado"],
+)
+def test_parse_json_rejects_hostile_or_oversized_input(raw):
+    with pytest.raises(PayloadError):
+        parse_json(raw)
+
+
+@pytest.mark.parametrize("raw", [None, 123, 1.5, [], {}, object()])
+def test_parse_json_rejects_wrong_input_type(raw):
+    with pytest.raises(PayloadError, match="tipo"):
+        parse_json(raw)
+
+
+def test_parse_json_rejects_invalid_utf8():
+    with pytest.raises(PayloadError):
+        parse_json(b"\xff\xfe{")
+
+
+@pytest.mark.parametrize("raw", ["x" * 26, None, 26, [0] * 26])
+def test_parse_binary_rejects_wrong_input_type(raw):
+    with pytest.raises(PayloadError, match="tipo"):
+        parse_binary(raw)
+
+
+def test_parse_json_rejects_non_finite_numbers():
+    for bad in ('"rssi":NaN', '"rssi":Infinity'):
+        raw = f'{{"v":1,"tag":"A1B2C3D4E5F6","node":"N1",{bad},"ts":1,"seq":1}}'
+        with pytest.raises(PayloadError):
+            parse_json(raw)

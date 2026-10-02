@@ -10,7 +10,7 @@ from __future__ import annotations
 import logging
 from collections import Counter
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 
 from .config import LocationConfig
@@ -101,6 +101,8 @@ class LocationService:
     ) -> IngestResult:
         """Valida y registra una observación. Nunca lanza por datos inválidos."""
         now = received_at or self._clock()
+        if obs.tag_id != obs.tag_id.upper():
+            obs = replace(obs, tag_id=obs.tag_id.upper())
         tag_ref = self._pseudo.ref("tag", obs.tag_id)
 
         if self._repo.lookup(obs.tag_id, requester=self._principal) is None:

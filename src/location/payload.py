@@ -24,6 +24,8 @@ PAYLOAD_VERSION = 1
 _BODY = struct.Struct("<BB6sHQIbB")
 _CRC = struct.Struct("<H")
 BINARY_SIZE = _BODY.size + _CRC.size
+# Un payload legítimo mide ~120 B; el tope evita trabajo y recursión con entradas hostiles.
+MAX_JSON_BYTES = 1024
 
 _TAG_RE = re.compile(r"[0-9A-Fa-f]{12}")
 _NODE_RE = re.compile(r"[A-Za-z0-9_-]{1,32}")
@@ -65,11 +67,18 @@ def _timestamp_from_ms(ts_ms: int) -> datetime:
         raise PayloadError("el campo 'ts' está fuera de rango") from exc
 
 
-def parse_json(raw: str | bytes) -> TagObservation:
+def parse_json(raw: str | bytes | bytearray) -> TagObservation:
     """Valida y convierte un payload JSON v1 en una observación."""
+    if not isinstance(raw, str | bytes | bytearray):
+        raise PayloadError(f"tipo de entrada inválido: {type(raw).__name__}")
+    if len(raw) > MAX_JSON_BYTES:
+        raise PayloadError(
+            f"el payload JSON excede el máximo de {MAX_JSON_BYTES} bytes"
+        )
     try:
         data = json.loads(raw)
-    except (ValueError, UnicodeDecodeError) as exc:
+    except (ValueError, RecursionError, TypeError) as exc:
+        # UnicodeDecodeError es subclase de ValueError.
         raise PayloadError("el payload no es JSON válido") from exc
     if not isinstance(data, dict):
         raise PayloadError("el payload JSON debe ser un objeto")
@@ -155,7 +164,10 @@ def encode_binary(obs: TagObservation) -> bytes:
 
 
 def parse_binary(raw: bytes) -> TagObservation:
-    """Valida longitud, CRC y versión; devuelve la observación."""
+    """Valida tipo, longitud, CRC y versión; devuelve la observación."""
+    if not isinstance(raw, bytes | bytearray):
+        raise PayloadError(f"tipo de entrada inválido: {type(raw).__name__}")
+    raw = bytes(raw)
     if len(raw) != BINARY_SIZE:
         raise PayloadError(
             f"longitud inválida: se esperaban {BINARY_SIZE} bytes y llegaron {len(raw)}"

@@ -80,6 +80,30 @@ def test_parse_config_rejects_invalid(raw, match):
         parse_config(raw)
 
 
+@pytest.mark.parametrize("bad", [float("nan"), float("inf"), float("-inf")])
+@pytest.mark.parametrize(
+    "section, key",
+    [
+        ("freshness", "max_age_s"),
+        ("freshness", "retention_s"),
+        ("validation", "rssi_min_dbm"),
+        ("confidence", "margin_full_db"),
+        ("smoothing", "alpha"),
+    ],
+)
+def test_parse_config_rejects_non_finite_numbers(section, key, bad):
+    with pytest.raises(ConfigError, match=key):
+        parse_config({section: {key: bad}, "zones": ZONES})
+
+
+def test_retention_must_cover_max_age():
+    with pytest.raises(ConfigError, match="retention_s"):
+        parse_config(
+            {"freshness": {"max_age_s": 60, "retention_s": 30}, "zones": ZONES}
+        )
+    parse_config({"freshness": {"max_age_s": 60, "retention_s": 60}, "zones": ZONES})
+
+
 def test_pseudonym_is_stable_keyed_and_opaque():
     p1 = Pseudonymizer(b"clave-1")
     p2 = Pseudonymizer(b"clave-2")
