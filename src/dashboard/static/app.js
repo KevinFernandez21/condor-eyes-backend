@@ -91,7 +91,7 @@ function renderHealth(s) {
 }
 
 // ---------- grafo ----------
-const NODE_W = 150, NODE_H = 54, GX = 205, GY = 108, PAD = 30;
+const NODE_W = 128, NODE_H = 54, GX = 170, GY = 100, PAD = 24;
 function renderGraph(s) {
   const g = s.graph, root = document.getElementById("graph");
   const maxCol = Math.max(...g.nodes.map((n) => n.col)), maxRow = Math.max(...g.nodes.map((n) => n.row));
@@ -120,9 +120,12 @@ function renderGraph(s) {
     const path = svg("path", { d: `M${x1} ${y1} Q${cx} ${cy} ${x2} ${y2}`, class: `edge ${e.kind}${hot ? " hot" : ""}`, "marker-end": "url(#arrow)" });
     path.append(svg("title", {}, `${e.label} (${e.source} → ${e.target})`));
     layer.append(path);
-    if (e.kind === "data") {
+    // Solo etiqueta corta (tasa y descartes) en aristas de datos con tráfico; el
+    // detalle completo va en el tooltip y en la tabla de abajo.
+    if (e.kind === "data" && (e.rate_per_s > 0 || e.drops > 0)) {
       const lx = (x1 + 2 * cx + x2) / 4, ly = (y1 + 2 * cy + y2) / 4;
-      labels.push(svg("text", { x: lx, y: ly, "text-anchor": "middle", class: "edge-label" }, e.label));
+      const short = `${e.rate_per_s == null ? "" : e.rate_per_s + "/s"}${e.drops ? ` ⚠${e.drops}` : ""}`;
+      labels.push(svg("text", { x: lx, y: ly, "text-anchor": "middle", class: "edge-label" }, short));
     }
   }
   const nodes = svg("g");
@@ -156,7 +159,7 @@ function renderAlerts(s) {
     return;
   }
   box.replaceChildren(...s.alerts.map((a) => el("article", { class: `alert ${a.severity}` },
-    el("header", {}, el("span", {}, a.outcome_label), el("span", { class: "small" }, `${clock(a.evaluated_at)} · ${a.decision_id || "—"}`)),
+    el("header", {}, el("span", { title: `valor original: ${a.outcome_raw || "—"}` }, a.outcome_label), el("span", { class: "small" }, `${clock(a.evaluated_at)} · ${a.decision_id || "—"}`)),
     el("div", {},
       el("span", { class: "tag op" }, a.requires_operator ? "Requiere operador" : "—"),
       el("span", { class: "tag" }, `confianza ${a.confidence_pct == null ? "sin datos" : a.confidence_pct + " %"}`),
@@ -165,7 +168,12 @@ function renderAlerts(s) {
       a.person_id ? el("span", { class: "tag" }, `persona ${a.person_id}`) : null),
     a.reasons.length ? el("div", {}, a.reasons.map((r) => el("span", { class: "tag", title: r.code }, r.label))) : el("div", { class: "small" }, "Sin códigos de razón."),
     el("details", {}, el("summary", { class: "small" }, `Evidencia (${a.evidence.length})`),
-      a.evidence.length ? el("pre", {}, JSON.stringify(a.evidence, null, 2)) : el("div", { class: "small" }, "Sin evidencia adjunta.")),
+      a.evidence.length
+        ? el("ul", { class: "evidence" }, a.evidence.map((ev) => el("li", {},
+            el("span", { class: "tag" }, ev.kind_label), el("span", { class: "tag" }, ev.role_label),
+            el("span", { class: "small", title: JSON.stringify(ev) },
+              `${ev.evidence_id}${ev.confidence == null ? "" : " · confianza " + Math.round(ev.confidence * 100) + " %"}${ev.detail ? " · " + ev.detail : ""}`))))
+        : el("div", { class: "small" }, "Sin evidencia adjunta.")),
     a.correlation_id ? el("button", { class: "linkbtn", type: "button", onclick: () => setCorrelation(a.correlation_id) }, "ver mensajes relacionados") : null)));
 }
 

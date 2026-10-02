@@ -16,6 +16,7 @@ import argparse
 import asyncio
 import random
 import sys
+from datetime import UTC, datetime
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
@@ -24,6 +25,14 @@ from agents.handlers import build_default_handlers
 from agents.runtime import AgentRuntime
 from bus import InMemoryHub, Topic
 from comms import ConfigurationError, ObservabilityCommsHandler
+from fusion.decision import (
+    DecisionOutcome,
+    DecisionRecord,
+    EvidenceKind,
+    EvidenceRef,
+    EvidenceRole,
+    ReasonCode,
+)
 
 CAMERAS = ("cam-1", "cam-2")
 ZONES = ("entrada", "bodega", "perimetro")
@@ -43,6 +52,55 @@ def _event_rule(track):
     return [{"type": "person_in_zone", "zone_id": zone, "tracks": len(track.payload["tracks"])}]
 
 
+_SCENARIOS = (
+    (DecisionOutcome.CORROBORATED, (ReasonCode.EVIDENCE_CONSISTENT,), (
+        (EvidenceKind.TRACK, EvidenceRole.SUPPORTS), (EvidenceKind.IDENTITY, EvidenceRole.SUPPORTS),
+        (EvidenceKind.LOCATION, EvidenceRole.SUPPORTS), (EvidenceKind.PERMISSION, EvidenceRole.SUPPORTS),
+    )),
+    (DecisionOutcome.ALERT, (ReasonCode.PERSON_WITHOUT_TAG,), (
+        (EvidenceKind.TRACK, EvidenceRole.SUPPORTS), (EvidenceKind.LOCATION, EvidenceRole.CONFLICTS),
+    )),
+    (DecisionOutcome.ALERT, (ReasonCode.ZONE_NOT_PERMITTED, ReasonCode.IDENTITY_TAG_MISMATCH), (
+        (EvidenceKind.IDENTITY, EvidenceRole.CONFLICTS), (EvidenceKind.PERMISSION, EvidenceRole.CONTEXT),
+    )),
+    (DecisionOutcome.INCONCLUSIVE, (ReasonCode.STALE_SENSOR, ReasonCode.HIDDEN_FACE), (
+        (EvidenceKind.TRACK, EvidenceRole.SUPPORTS), (EvidenceKind.LOCATION, EvidenceRole.STALE),
+    )),
+)  # fmt: skip
+
+
+def _synthetic_decision(rng: random.Random, n: int, camera: str) -> DecisionRecord:
+    """Decisión realista: razones y referencias de evidencia; IDs ya seudonimizados."""
+    outcome, reasons, evidence = rng.choice(_SCENARIOS)
+    now = datetime.now(UTC)
+    zone = rng.choice(ZONES)
+    refs = tuple(
+        EvidenceRef(
+            evidence_id=f"ev-{n:04d}-{i}",
+            kind=kind,
+            role=role,
+            observed_at=now,
+            confidence=round(rng.uniform(0.5, 0.98), 2),
+            stream_id=camera,
+            zone_id=zone,
+            detail="sintético",
+        )
+        for i, (kind, role) in enumerate(evidence)
+    )
+    return DecisionRecord(
+        decision_id=f"dec-{n:04d}",
+        evaluated_at=now,
+        outcome=outcome,
+        confidence=round(rng.uniform(0.4, 0.95), 2),
+        reason_codes=reasons,
+        evidence=refs,
+        track_ref=f"trk-{rng.randrange(16**4):04x}",
+        stream_id=camera,
+        zone_id=zone,
+        person_id=f"p-{rng.randrange(16**4):04x}",
+    )
+
+
 async def _publish_synthetic(runtime: AgentRuntime, period: float) -> None:
     rng = random.Random(7)
     n = 0
@@ -56,20 +114,11 @@ async def _publish_synthetic(runtime: AgentRuntime, period: float) -> None:
             for i in range(rng.randint(1, 3))
         ]
         await runtime.emit("inference", Topic.DETECTIONS, {"detections": detections}, stream_id=camera)
-        if n % 5 == 0:  # decisión de fusión sintética; identificadores ya seudonimizados
-            zone = rng.choice(ZONES)
+        if n % 5 == 0:  # decisión de fusión sintética (misma forma que DecisionRecord)
             await runtime.emit(
                 "event",
                 Topic.EVENTS,
-                {
-                    "decision_id": f"dec-{n:04d}",
-                    "outcome": rng.choice(["corroborated", "uncorroborated"]),
-                    "confidence": round(rng.uniform(0.4, 0.95), 2),
-                    "zone_id": zone,
-                    "stream_id": camera,
-                    "person_id": f"p-{rng.randrange(16**4):04x}",
-                    "requires_operator": True,
-                },
+                _synthetic_decision(rng, n, camera).to_payload(),
                 stream_id=camera,
             )
         await asyncio.sleep(period)
