@@ -78,7 +78,9 @@ def parse_config(raw: Mapping[str, Any]) -> LocationConfig:
     """Construye y valida la configuración desde un dict (TOML ya parseado)."""
     zones_raw = raw.get("zones")
     if not isinstance(zones_raw, Mapping) or not zones_raw:
-        raise ConfigError("se requiere al menos una zona (sección de zonas) en [zones.<id>]")
+        raise ConfigError(
+            "se requiere al menos una zona (sección de zonas) en [zones.<id>]"
+        )
 
     zones: dict[str, ZoneConfig] = {}
     node_zone: dict[str, str] = {}
