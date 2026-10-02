@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from datetime import datetime
@@ -50,3 +51,31 @@ class FrameMetadata:
             "height": self.height,
             "detections": [dict(d) for d in self.detections],
         }
+
+
+def ensure_json_payload(value: object, _path: str = "payload") -> None:
+    """Exige JSON estricto: str/int/float/bool/None, list/tuple y dict con claves str.
+
+    Rechaza datetime, sets, bytes, escalares numpy y objetos arbitrarios, igual
+    que el `MetadataEnvelope` estricto del bus. Lanza TypeError.
+    """
+    ensure_metadata_only(value, _path)
+    if value is None or isinstance(value, (str, bool, int)):
+        return
+    if isinstance(value, float):
+        if not math.isfinite(value):
+            raise TypeError(f"{_path}: los floats no finitos no son JSON válido")
+        return
+    if isinstance(value, Mapping):
+        for key, item in value.items():
+            if not isinstance(key, str):
+                raise TypeError(
+                    f"{_path}: las claves deben ser str, no {type(key).__name__}"
+                )
+            ensure_json_payload(item, f"{_path}.{key}")
+        return
+    if isinstance(value, (list, tuple)):
+        for index, item in enumerate(value):
+            ensure_json_payload(item, f"{_path}[{index}]")
+        return
+    raise TypeError(f"{_path}: tipo no serializable a JSON: {type(value).__name__}")

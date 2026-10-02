@@ -4,7 +4,7 @@ from .buffer import DropOldestQueue
 from .fake import FakeCamera, FakeFrameSource, FakeSourceFactory
 from .health import BackoffPolicy, StreamHealth, StreamState
 from .live_pipeline import LiveVideoPipeline, PipelineConfig
-from .metadata import FrameMetadata, ensure_metadata_only
+from .metadata import FrameMetadata, ensure_json_payload, ensure_metadata_only
 from .publisher import MetadataPublisher
 from .shared_pipeline import SharedVideoPipeline, SourceKind, StreamSource
 from .sources import (
@@ -39,6 +39,7 @@ __all__ = [
     "StreamSource",
     "StreamState",
     "TensorRTEngineSpec",
+    "ensure_json_payload",
     "ensure_metadata_only",
     "opencv_source_factory",
     "redact_credentials",

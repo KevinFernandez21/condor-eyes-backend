@@ -17,7 +17,7 @@ from typing import Any
 from bus import MetadataEnvelope, MetadataHub, Topic
 
 from .health import StreamHealth
-from .metadata import FrameMetadata, ensure_metadata_only
+from .metadata import FrameMetadata, ensure_json_payload
 
 
 class MetadataPublisher:
@@ -72,7 +72,7 @@ class MetadataPublisher:
         droppable: bool = True,
     ) -> None:
         """Valida y publica; lanza TypeError si el payload contiene pixeles."""
-        ensure_metadata_only(payload)
+        ensure_json_payload(payload)
         envelope = MetadataEnvelope(
             source=self._source, stream_id=stream_id, payload=dict(payload)
         )
