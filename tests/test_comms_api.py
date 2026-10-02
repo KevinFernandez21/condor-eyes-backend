@@ -1,6 +1,7 @@
 """Pruebas HTTP/WebSocket de la API de observabilidad."""
 
 import json
+import time
 
 import pytest
 from starlette.testclient import TestClient
@@ -26,6 +27,16 @@ class FakeRuntime:
 
     def queue_depths(self):
         return {"tracker": 4, "comms": 0}
+
+
+def wait_until(condition, timeout: float = 5.0) -> bool:
+    """Reintenta ``condition`` hasta que sea verdadera o venza ``timeout``."""
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if condition():
+            return True
+        time.sleep(0.01)
+    return condition()
 
 
 def make_view():
@@ -180,8 +191,9 @@ def test_ws_desconexion_quita_el_oyente():
     client = TestClient(create_app(view))
     with client.websocket_connect("/ws") as ws:
         ws.receive_json()
-        assert client.get("/health").json()["ws_clients"] == 1
-    assert client.get("/health").json()["ws_clients"] == 0
+        assert wait_until(lambda: client.get("/health").json()["ws_clients"] == 1)
+    # La limpieza ocurre en el hilo del servidor: se espera con tope, sin sleeps fijos.
+    assert wait_until(lambda: client.get("/health").json()["ws_clients"] == 0)
     tap.record(Topic.EVENTS, e({"t": 1}))  # no explota sin clientes
 
 
