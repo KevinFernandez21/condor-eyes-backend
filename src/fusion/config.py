@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 import tomllib
 from dataclasses import dataclass, fields
 from pathlib import Path
@@ -28,6 +29,22 @@ class FusionConfig:
     min_reid_confidence: float = 0.7
     # Confianza mínima del conjunto para poder corroborar (mínimo de las fuentes).
     min_decision_confidence: float = 0.6
+
+    def __post_init__(self) -> None:
+        for f in fields(self):
+            value = getattr(self, f.name)
+            if isinstance(value, bool) or not isinstance(value, int | float):
+                raise TypeError(f"{f.name} debe ser numérico")
+            if not math.isfinite(value):
+                raise ValueError(f"{f.name} debe ser un número finito")
+        for key in _RANGE_KEYS:
+            if not 0.0 <= getattr(self, key) <= 1.0:
+                raise ValueError(f"{key} debe estar en [0, 1]")
+        for key in _POSITIVE_KEYS:
+            if getattr(self, key) <= 0:
+                raise ValueError(f"{key} debe ser positivo")
+        if self.max_clock_skew_s < 0:
+            raise ValueError("max_clock_skew_s no puede ser negativo")
 
 
 _RANGE_KEYS = (
@@ -59,13 +76,4 @@ def load_fusion_config(
     if unknown:
         raise ValueError(f"Claves desconocidas en [fusion]: {sorted(unknown)}")
     data.update({k: v for k, v in overrides.items() if v is not None})
-    cfg = FusionConfig(**data)
-    for key in _RANGE_KEYS:
-        if not 0.0 <= getattr(cfg, key) <= 1.0:
-            raise ValueError(f"{key} debe estar en [0, 1]")
-    for key in _POSITIVE_KEYS:
-        if getattr(cfg, key) <= 0:
-            raise ValueError(f"{key} debe ser positivo")
-    if cfg.max_clock_skew_s < 0:
-        raise ValueError("max_clock_skew_s no puede ser negativo")
-    return cfg
+    return FusionConfig(**data)

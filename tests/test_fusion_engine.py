@@ -520,3 +520,15 @@ def test_only_fully_fresh_evidence_can_corroborate():
 
 def test_empty_input_produces_no_decisions():
     assert make_engine().evaluate(FusionInput(), NOW) == ()
+
+
+def test_nan_config_cannot_make_old_evidence_corroborated():
+    nan = float("nan")
+    with pytest.raises(ValueError):
+        make_engine(
+            track_max_age_s=nan,
+            identity_max_age_s=nan,
+            location_max_age_s=nan,
+            max_clock_skew_s=nan,
+            time_window_s=nan,
+        )

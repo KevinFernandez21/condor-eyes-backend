@@ -58,3 +58,36 @@ def test_permissions_repository_distinguishes_missing_record():
     repo = InMemoryPermissions({"p1": frozenset({"z1"})})
     assert repo.allowed_zones("p1") == frozenset({"z1"})
     assert repo.allowed_zones("ghost") is None
+
+
+@pytest.mark.parametrize("bad", [float("nan"), float("inf"), float("-inf")])
+@pytest.mark.parametrize(
+    "key",
+    [
+        "time_window_s",
+        "track_max_age_s",
+        "identity_max_age_s",
+        "location_max_age_s",
+        "reid_max_age_s",
+        "max_clock_skew_s",
+        "min_track_confidence",
+        "min_identity_score",
+        "min_location_confidence",
+        "min_reid_confidence",
+        "min_decision_confidence",
+    ],
+)
+def test_non_finite_config_values_are_rejected(key, bad):
+    with pytest.raises(ValueError, match=r"finito|\[0, 1\]"):
+        FusionConfig(**{key: bad})
+    with pytest.raises(ValueError, match=r"finito|\[0, 1\]"):
+        load_fusion_config(None, **{key: bad})
+
+
+def test_toml_nan_is_rejected(tmp_path):
+    bad = tmp_path / "nan.toml"
+    bad.write_text(
+        "[fusion]\nlocation_max_age_s = nan\nmax_clock_skew_s = nan\n", encoding="utf-8"
+    )
+    with pytest.raises(ValueError, match="finito"):
+        load_fusion_config(bad)
