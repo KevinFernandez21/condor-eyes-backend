@@ -94,3 +94,24 @@ del plano de video. Un único engine FP16 compartido, nunca uno por cámara.
 Pendiente en hardware: validar el grafo, elegir tracker (ARCH-003), medir
 latencia/NVDEC con 4-8 streams y escribir el backend `FrameSource`/probe
 basado en GStreamer (`gi`, importado de forma diferida).
+
+## Publicación hacia el bus y seguridad
+
+- **Único camino al bus**: `MetadataPublisher(hub, loop)` (`publisher.py`).
+  Construye el `MetadataEnvelope` y ejecuta `ensure_metadata_only` sobre el
+  payload completo antes de publicar; `LiveVideoPipeline(publisher=...)` envía
+  por él la metadata (`Topic.DETECTIONS`) y los estados (`Topic.STREAM_STATUS`).
+  Si un `processor` filtra pixeles, el frame se descarta y se cuenta en
+  `callback_errors`. Los mensajes en vuelo están acotados (`max_pending`);
+  el excedente de metadata se descarta (`publisher.dropped`).
+- **Credenciales RTSP**: `sanitize_uri`/`redact_credentials` (`uri.py`) quitan
+  `usuario:clave@` de errores, logs, `last_error` y `repr(StreamSource)`. Solo
+  el backend de captura ve la URI real (`StreamSource.uri`); usar `safe_uri`
+  para cualquier salida.
+- **Despachador único**: un consumidor lento (`on_metadata`, `processor` o hub)
+  retrasa la entrega de todos los streams; la memoria sigue acotada porque cada
+  stream descarta su frame más viejo y los lectores nunca se bloquean.
+- **Watchdog**: además de reiniciar el lector, intenta cerrar la fuente
+  colgada para liberar el dispositivo.
+- **Reinicio**: `start()` tras un `stop()` cuyo join expiró se rechaza
+  (`RuntimeError`) mientras el despachador o el watchdog anteriores sigan vivos.
