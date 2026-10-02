@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+from collections.abc import Sequence
 from typing import Any
 
 from agents.handlers import AlertSink, CommsHandler
@@ -99,13 +100,20 @@ class ObservabilityCommsHandler(CommsHandler):
         token: str | None = None,
         sink: AlertSink | None = None,
         ws_queue_size: int = DEFAULT_WS_QUEUE,
+        allowed_origins: Sequence[str] | None = None,
         tap: BusTap | None = None,
     ) -> None:
         check_bind(host, token)  # falla antes de arrancar nada
         super().__init__(sink or _NullSink())
         self.tap = tap or BusTap(hub)
         self.view = TapSystemView(self.tap)
-        self.app = create_app(self.view, token=token, host=host, ws_queue_size=ws_queue_size)
+        self.app = create_app(
+            self.view,
+            token=token,
+            host=host,
+            ws_queue_size=ws_queue_size,
+            allowed_origins=allowed_origins,
+        )
         self._server = CommsServer(self.app, host, port)
 
     @property

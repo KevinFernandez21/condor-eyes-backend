@@ -197,7 +197,8 @@ class BusTap:
         ring: deque[dict[str, Any]], limit: int, stream_id: str | None, zone: str | None
     ) -> list[dict[str, Any]]:
         out: list[dict[str, Any]] = []
-        for data in reversed(ring):
+        # instantánea: tuple() copia en C sin ceder el GIL; otro hilo puede estar añadiendo
+        for data in reversed(tuple(ring)):
             if _matches(data, stream_id, zone):
                 out.append(data)
                 if len(out) >= limit:
@@ -224,8 +225,11 @@ class BusTap:
         for topic in Topic:
             stats = self._stats[topic]
             window = stats.window
-            while window and window[0] <= now - self._window_s:
-                window.popleft()
+            try:
+                while window and window[0] <= now - self._window_s:
+                    window.popleft()
+            except IndexError:  # otro lector la vació entre la comprobación y el pop
+                pass
             out.append(
                 {
                     "topic": topic.value,

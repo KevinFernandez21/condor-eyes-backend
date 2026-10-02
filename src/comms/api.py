@@ -15,8 +15,9 @@ import ipaddress
 import logging
 import time
 from collections import deque
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Sequence
 from typing import Any
+from urllib.parse import urlsplit
 
 from fastapi import (
     APIRouter,
@@ -38,6 +39,42 @@ logger = logging.getLogger(__name__)
 
 MAX_LIMIT = 500
 DEFAULT_WS_QUEUE = 256
+
+
+TOKEN_PROTOCOL_PREFIX = "token."
+"""Subprotocolo ``token.<valor>``: lleva el token en ``Sec-WebSocket-Protocol``."""
+
+
+def _offered_protocols(headers: Any) -> list[str]:
+    raw = headers.get("sec-websocket-protocol", "")
+    return [p.strip() for p in raw.split(",") if p.strip()]
+
+
+def _normalize_origin(origin: str) -> str:
+    """Minúsculas y sin puerto por defecto (80/443), para comparar orígenes."""
+    parts = urlsplit(origin.strip().lower())
+    if not parts.scheme or not parts.hostname:
+        return origin.strip().lower()
+    host = f"[{parts.hostname}]" if ":" in parts.hostname else parts.hostname
+    try:
+        port = parts.port
+    except ValueError:
+        return origin.strip().lower()
+    default = {"http": 80, "https": 443}.get(parts.scheme)
+    suffix = f":{port}" if port is not None and port != default else ""
+    return f"{parts.scheme}://{host}{suffix}"
+
+
+def _default_origins(host: str, port: int | None) -> frozenset[str]:
+    hosts = {"localhost", "127.0.0.1", "[::1]"}
+    if host not in ("0.0.0.0", "::", ""):
+        hosts.add(f"[{host}]" if ":" in host else host)
+    suffix = "" if port is None else f":{port}"
+    return frozenset(
+        _normalize_origin(f"{scheme}://{h}{suffix}")
+        for scheme in ("http", "https")
+        for h in hosts
+    )
 
 
 class ConfigurationError(ValueError):
@@ -159,21 +196,39 @@ def create_app(
     token: str | None = None,
     host: str = "127.0.0.1",
     ws_queue_size: int = DEFAULT_WS_QUEUE,
+    allowed_origins: Sequence[str] | None = None,
 ) -> FastAPI:
-    """Construye la app. Falla si ``host`` no es local y no hay ``token``."""
+    """Construye la app. Falla si ``host`` no es local y no hay ``token``.
+
+    ``allowed_origins`` limita qué páginas web pueden abrir el WebSocket. Por
+    defecto: loopback (localhost, 127.0.0.1, [::1]) y el ``host`` de servicio,
+    en el puerto en que se sirve. Sin cabecera ``Origin`` (clientes que no son
+    navegador) se permite. Con token, ``/docs`` y ``/openapi.json`` se desactivan.
+    """
     check_bind(host, token)
     token = token or None
     state = _State()
 
+    token_bytes = token.encode("utf-8") if token else b""
+
     def authorized(headers: Any, query_token: str | None) -> bool:
         if token is None:
             return True
-        candidates = [headers.get("x-api-token")]
+        # Starlette decodifica las cabeceras como latin-1: se recuperan los bytes
+        # originales; la query ya viene decodificada de UTF-8.
+        candidates: list[bytes] = []
+        if (api_key := headers.get("x-api-token")) is not None:
+            candidates.append(api_key.encode("latin-1", "replace"))
         auth = headers.get("authorization", "")
         if auth.lower().startswith("bearer "):
-            candidates.append(auth[7:].strip())
-        candidates.append(query_token)
-        return any(c is not None and hmac.compare_digest(c, token) for c in candidates)
+            candidates.append(auth[7:].strip().encode("latin-1", "replace"))
+        if query_token is not None:
+            candidates.append(query_token.encode("utf-8", "replace"))
+        for proto in _offered_protocols(headers):
+            if proto.startswith(TOKEN_PROTOCOL_PREFIX):
+                candidates.append(proto[len(TOKEN_PROTOCOL_PREFIX) :].encode("latin-1", "replace"))
+        # compare_digest sobre bytes: con str no ASCII lanzaría TypeError.
+        return any(hmac.compare_digest(c, token_bytes) for c in candidates)
 
     def require_token(request: Request) -> None:
         # En HTTP el token solo va por cabecera (la URL acaba en logs).
@@ -184,13 +239,32 @@ def create_app(
         title="Condor Eye - API de observabilidad",
         description="Solo lectura: metadata del bus, agentes, eventos y decisiones.",
         version="1",
+        docs_url=None if token else "/docs",
+        redoc_url=None if token else "/redoc",
+        openapi_url=None if token else "/openapi.json",
     )
+    fixed_origins = (
+        frozenset(_normalize_origin(o) for o in allowed_origins)
+        if allowed_origins is not None
+        else None
+    )
+
+    def origin_allowed(websocket: WebSocket) -> bool:
+        origin = websocket.headers.get("origin")
+        if origin is None:
+            return True
+        allowed = fixed_origins
+        if allowed is None:
+            server = websocket.scope.get("server")
+            port = server[1] if server else None
+            allowed = _default_origins(host, port)
+        return _normalize_origin(origin) in allowed
     router = APIRouter(dependencies=[Depends(require_token)])  # solo rutas HTTP
 
     Limit = Query(50, ge=1, le=MAX_LIMIT, description="Máximo de elementos")
 
     @router.get("/health")
-    def health() -> dict[str, Any]:
+    async def health() -> dict[str, Any]:
         agents = view.agents()
         failed = sum(1 for a in agents if a["state"] == "failed")
         running = sum(1 for a in agents if a["state"] == "running")
@@ -206,21 +280,21 @@ def create_app(
         }
 
     @router.get("/agents")
-    def agents() -> dict[str, Any]:
+    async def agents() -> dict[str, Any]:
         return {"agents": view.agents()}
 
     @router.get("/topics")
-    def topics() -> dict[str, Any]:
+    async def topics() -> dict[str, Any]:
         return {"topics": view.topics()}
 
     @router.get("/events")
-    def events(
+    async def events(
         limit: int = Limit, stream_id: str | None = None, zone: str | None = None
     ) -> dict[str, Any]:
         return {"events": view.events(limit, stream_id=stream_id, zone=zone)}
 
     @router.get("/decisions")
-    def decisions(
+    async def decisions(
         limit: int = Limit, stream_id: str | None = None, zone: str | None = None
     ) -> dict[str, Any]:
         return {"decisions": view.decisions(limit, stream_id=stream_id, zone=zone)}
@@ -234,6 +308,9 @@ def create_app(
         stream_id: str | None = None,
         token: str | None = None,
     ) -> None:
+        if not origin_allowed(websocket):
+            await websocket.close(code=1008, reason="Origin no permitido")
+            return
         if not authorized(websocket.headers, token):
             await websocket.close(code=1008, reason="Token ausente o inválido")
             return
@@ -246,7 +323,10 @@ def create_app(
         except InvalidTopicError as exc:
             await websocket.close(code=1008, reason=str(exc)[:120])
             return
-        await websocket.accept()
+        offered = [
+            p for p in _offered_protocols(websocket.headers) if p.startswith(TOKEN_PROTOCOL_PREFIX)
+        ]
+        await websocket.accept(subprotocol=offered[0] if offered else None)
         channel = ClientChannel(ws_queue_size)
         state.clients.add(channel)
 
@@ -299,6 +379,8 @@ async def _drain_incoming(websocket: WebSocket) -> None:
     """Ignora lo que envíe el cliente; solo sirve para detectar la desconexión."""
     try:
         while True:
-            await websocket.receive_text()
-    except WebSocketDisconnect:
+            message = await websocket.receive()
+            if message["type"] == "websocket.disconnect":
+                return
+    except (WebSocketDisconnect, RuntimeError):
         return
