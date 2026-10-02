@@ -1,0 +1,24 @@
+# Site map del prototipo con el tag XIAO ESP32-C6 (issue #26).
+# Une cada zona con el receptor que la cubre y con la cámara/región que la ve.
+# Región de imagen: [x0, y0, x1, y1] normalizado [0, 1] (x a la derecha, y hacia abajo).
+# `enter_dbm` / `hysteresis_db` son PLACEHOLDERS hasta calibrar en sitio
+# (ver docs/xiao-c6-tag.md); `calibrated = false` lo marca.
+
+[[cameras]]
+id = "laptop-webcam"   # placeholder: cámara del portátil
+source = 0
+
+[[receivers]]
+id = "N0001"           # ID de nodo del payload v1 (debe existir en configs/location.toml)
+kind = "pc-ble"        # adaptador Bluetooth del PC, junto a la cámara
+zone = "lab"
+
+[[zones]]
+id = "lab"
+name = "Laboratorio (frente a la cámara)"
+receiver = "N0001"
+camera = "laptop-webcam"
+region = [0.05, 0.10, 0.95, 0.95]
+enter_dbm = -70        # entra si el RSSI suavizado >= este valor
+hysteresis_db = 6      # sale si el RSSI suavizado < enter_dbm - hysteresis_db
+calibrated = false
