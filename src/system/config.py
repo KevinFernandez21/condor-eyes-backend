@@ -123,6 +123,17 @@ _POSITIVE = {
     "fps",
     "interval_s",
 }
+_MAXIMUM = {
+    "heartbeat_interval_s": 3600.0,
+    "fusion_interval_s": 3600.0,
+    "shutdown_timeout_s": 600.0,
+    "queue_size": 1_000_000,
+    "history_size": 1_000_000,
+    "recent_limit": 100_000,
+    "fps": 240.0,
+    "interval_s": 3600.0,
+    "device_index": 64,
+}
 _KINDS = {
     "camera": CAMERA_KINDS,
     "detector": DETECTOR_KINDS,
@@ -144,10 +155,16 @@ def _check_value(section: str, key: str, value: Any, expected: type) -> Any:
         return value
     if isinstance(value, bool) or not isinstance(value, int | float):
         raise ConfigError(f"{where} debe ser numérico")
-    if not math.isfinite(value):
+    try:
+        number = float(value)  # un entero enorme desborda aquí, no en isfinite
+    except OverflowError:
+        raise ConfigError(f"{where} es demasiado grande (máximo permitido)") from None
+    if not math.isfinite(number):
         raise ConfigError(f"{where} debe ser un número finito")
-    if key in _POSITIVE and value <= 0:
+    if key in _POSITIVE and number <= 0:
         raise ConfigError(f"{where} debe ser positivo")
+    if key in _MAXIMUM and number > _MAXIMUM[key]:
+        raise ConfigError(f"{where} supera el máximo permitido ({_MAXIMUM[key]})")
     if expected is int:
         if isinstance(value, float):
             if not value.is_integer():

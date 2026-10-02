@@ -131,3 +131,29 @@ def test_permisos_deben_ser_listas_de_texto(tmp_path):
     body = BASE.format(system="", camera="") + "[permissions]\np1 = [1, 2]\n"
     with pytest.raises(ConfigError, match="permissions"):
         load_system_config(_write(tmp_path, body), "sim")
+
+
+def test_entero_gigante_es_config_error_no_overflow(tmp_path):
+    path = _cfg(tmp_path, system="heartbeat_interval_s = 1" + "0" * 400)
+    with pytest.raises(ConfigError):
+        load_system_config(path, "sim")
+
+
+@pytest.mark.parametrize(
+    "line",
+    [
+        "heartbeat_interval_s = 1e300",
+        "fusion_interval_s = 100000",
+        "shutdown_timeout_s = 100000",
+        "queue_size = 100000000",
+        "history_size = 100000000",
+    ],
+)
+def test_limites_superiores_del_sistema(tmp_path, line):
+    with pytest.raises(ConfigError, match="máximo"):
+        load_system_config(_cfg(tmp_path, system=line), "sim")
+
+
+def test_fps_fuera_de_rango(tmp_path):
+    with pytest.raises(ConfigError, match="máximo"):
+        load_system_config(_cfg(tmp_path, camera="fps = 100000"), "sim")
