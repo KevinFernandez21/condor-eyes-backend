@@ -223,3 +223,34 @@ def test_token_requerido_en_http_y_ws():
         assert ws.receive_json()["type"] == "hello"
     with client.websocket_connect("/ws", headers={"Authorization": "Bearer s3cret"}) as ws:
         assert ws.receive_json()["type"] == "hello"
+
+
+class ComponentView(TapSystemView):
+    """Vista que, además de los roles, expone componentes (``role: "component"``)."""
+
+    def agents(self):
+        extra = [
+            {"name": f"component/{n}", "role": "component", "instance": n, "state": st,
+             "processed": 0, "duplicates": 0, "failures": 0, "retries": 0,
+             "last_error": None, "last_heartbeat": None, "restarts": 0, "queue_depth": None}
+            for n, st in (("camera", "ok"), ("location", "simulated"), ("detector", "degraded"))
+        ]
+        return super().agents() + extra
+
+
+def test_health_cuenta_solo_roles_y_separa_componentes():
+    tap = BusTap(InMemoryHub())
+    client = TestClient(create_app(ComponentView(tap, runtime=FakeRuntime())))
+    body = client.get("/health").json()
+    assert body["agents_total"] == 2  # tracker y comms; los componentes no cuentan
+    assert body["agents_running"] == 1
+    assert body["agents_failed"] == 1
+    assert body["components_total"] == 3
+    assert body["components_ok"] == 2
+    assert body["components_degraded"] == 1
+
+
+def test_health_sin_componentes_los_informa_en_cero():
+    _, view = make_view()
+    body = TestClient(create_app(view)).get("/health").json()
+    assert (body["components_total"], body["components_ok"], body["components_degraded"]) == (0, 0, 0)

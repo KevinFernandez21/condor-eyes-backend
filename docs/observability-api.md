@@ -47,7 +47,7 @@ Todos `GET`, JSON. `limit` 1..500 (defecto 50); más nuevo primero.
 
 | Ruta | Respuesta |
 |------|-----------|
-| `/health` | `{status: "ok"\|"degraded", agents_total, agents_running, agents_failed, uptime_s, ws_clients, ws_dropped_total}` (`degraded` si algún agente está `failed`) |
+| `/health` | `{status: "ok"\|"degraded", agents_total, agents_running, agents_failed, components_total, components_ok, components_degraded, uptime_s, ws_clients, ws_dropped_total}` (`degraded` si algún agente está `failed`). `agents_*` cuentan solo los roles; las entradas con `role: "component"` (componentes del ejecutor) van aparte: `components_ok` = `ok`/`simulated`, `components_degraded` = `degraded`/`offline`/`failed` |
 | `/agents` | `{agents: [{name, role, instance, state, processed, duplicates, failures, retries, last_error, last_heartbeat, restarts, queue_depth}]}`. `last_heartbeat` = `created_at` del último `system.health` de ese agente (o `null`); `restarts` = comandos `restart` vistos para el rol |
 | `/topics` | `{topics: [{topic, count, rate_per_s, window_s, drops, last_message_at}]}` para los 7 tópicos. `rate_per_s` en ventana deslizante (10 s). `drops` = reportes de `queue_overflow` (`drop_oldest`) del hub: cota inferior, porque el hub limita sus reportes |
 | `/events?limit&stream_id&zone` | `{events: [Envelope]}`: todo lo publicado en `events` |

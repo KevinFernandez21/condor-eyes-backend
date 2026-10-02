@@ -265,7 +265,10 @@ def create_app(
 
     @router.get("/health")
     async def health() -> dict[str, Any]:
-        agents = view.agents()
+        everything = view.agents()
+        # Los componentes del ejecutor (role "component") se cuentan aparte de los roles.
+        agents = [a for a in everything if a.get("role") != "component"]
+        components = [a for a in everything if a.get("role") == "component"]
         failed = sum(1 for a in agents if a["state"] == "failed")
         running = sum(1 for a in agents if a["state"] == "running")
         return {
@@ -273,6 +276,13 @@ def create_app(
             "agents_total": len(agents),
             "agents_running": running,
             "agents_failed": failed,
+            "components_total": len(components),
+            "components_ok": sum(
+                1 for a in components if a["state"] in ("ok", "simulated")
+            ),
+            "components_degraded": sum(
+                1 for a in components if a["state"] in ("degraded", "offline", "failed")
+            ),
             "uptime_s": round(time.monotonic() - state.started, 3),
             "ws_clients": len(state.clients),
             "ws_dropped_total": state.dropped_closed
