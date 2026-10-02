@@ -1,5 +1,7 @@
 # Informe: verificación facial de personal autorizado (issue #10)
 
+> **Hardware y runtime de estas mediciones:** laptop con Intel Core Ultra 9 275HX (24 hilos), 32 GB de RAM, GPU dedicada NVIDIA GeForce RTX 5080 Laptop (16 GB) y GPU integrada Intel Graphics, Windows 11, Python 3.11.16. Runtime: OpenCV 5.0.0 DNN en CPU, **FP32** (YuNet y SFace ONNX). La política vigente pasa a OpenVINO FP16 (equivalencia medida: coseno ≥ 0,9998 frente a FP32); ver la política de precisión del presupuesto edge. **No** es la Jetson Orin Nano ni la laptop i7 de 12.ª gen. del equipo: los FPS y latencias de aquí no se transfieren. El presupuesto común sin CUDA está en [`docs/edge-budget.md`](../edge-budget.md) (issue #23).
+
 Corrida del 2026-10-01 en la laptop, con OpenCV DNN en CPU.
 Comando: `uv run python scripts/faceid.py benchmark`.
 

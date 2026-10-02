@@ -30,6 +30,8 @@ No hay Dockerfile ni pre-commit todavía. `FakeDetector` permite probar el harne
 
 En la Orin, JetPack 6 trae Python 3.10 y sus bindings de TensorRT/DeepStream están compilados para 3.10; con el Python 3.11 de uv habrá que conseguir o compilar esos bindings para 3.11.
 
+Presupuesto edge (issue #23): `docs/edge-budget.md` y `uv run python scripts/edge_budget.py {export,matrix}` miden memoria y FPS en la laptop **sin CUDA** (OpenVINO FP16 en CPU/iGPU, detector lean de `src/edge/ovdetect.py` sin torch) como proxy de la Jetson. Decisiones ARCH-006 a ARCH-009 en `docs/architecture.md`: un solo detector de 10 clases como objetivo (hoy dos engines como excepción temporal), FP16 en todo, entrada 640 en multistream.
+
 La documentación y los mensajes de error están en español; mantén ese idioma.
 
 ## Harness de comparación (`src/compare/`)

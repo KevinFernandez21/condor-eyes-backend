@@ -1,5 +1,7 @@
 # Informe: detector general de personas y objetos (issue #9)
 
+> **Hardware y runtime de estas mediciones:** laptop con Intel Core Ultra 9 275HX (24 hilos), 32 GB de RAM, GPU dedicada NVIDIA GeForce RTX 5080 Laptop (16 GB) y GPU integrada Intel Graphics, Windows 11, Python 3.11.16. Runtime: ultralytics 8.4.170 + torch 2.14.1+cu130 en la RTX 5080, pesos `.pt` con `quantize=16` (FP16), batch 1. **No** es la Jetson Orin Nano ni la laptop i7 de 12.ª gen. del equipo: los FPS y latencias de aquí no se transfieren. El presupuesto común sin CUDA está en [`docs/edge-budget.md`](../edge-budget.md) (issue #23).
+
 Corrida del 2026-10-01 en la laptop (RTX 5080 Laptop 16 GB). Splits y licencias en
 `docs/surveillance-detection.md`. Los umbrales por clase se calibraron en val (F1
 máximo) y **nunca** con test.
@@ -106,6 +108,8 @@ Ejemplos revisados a mano (imágenes en `reports/surveillance/failures_*.jpg`, f
   con caja, clase, confianza y FPS.
 
 ## Decisión
+
+> **Matiz del presupuesto edge (#23, ARCH-008):** 1280 multiplica el costo; con 8 streams 1080p los detectores solos ocupan 5,2–5,7 GB y el stack completo no cabe con margen en 8 GB. Por eso **v1 (1280) se recomienda solo con N ≤ 2 cámaras**; en multistream el valor por defecto es v0 (640). Ver `docs/edge-budget.md`.
 
 1. **Configuración versionada recomendada: `configs/surveillance_v1.toml`.** YOLOv8n
    COCO **sin reentrenar** a 1280, con umbrales por clase calibrados en val. Es el mejor

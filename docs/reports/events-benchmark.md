@@ -1,5 +1,7 @@
 # Informe: benchmark de eventos (issue #12)
 
+> **Hardware y runtime de estas mediciones:** laptop con Intel Core Ultra 9 275HX (24 hilos), 32 GB de RAM, GPU dedicada NVIDIA GeForce RTX 5080 Laptop (16 GB) y GPU integrada Intel Graphics, Windows 11, Python 3.11.16. Runtime: Python puro en CPU (sin GPU). **No** es la Jetson Orin Nano ni la laptop i7 de 12.ª gen. del equipo: los FPS y latencias de aquí no se transfieren. El presupuesto común sin CUDA está en [`docs/edge-budget.md`](../edge-budget.md) (issue #23).
+
 Corrida del 2026-10-01 en la laptop (CPU). Comando:
 `uv run python scripts/events.py benchmark --learned`. Configuración: `configs/events.toml`
 (merodeo con umbral de 30 s y desplazamiento máximo de 0,12; intrusión a 0,6 s;
