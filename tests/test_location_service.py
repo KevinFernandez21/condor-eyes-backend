@@ -293,3 +293,18 @@ def test_every_published_envelope_payload_is_strict_json():
         payload = to_envelope(report).payload
         json.dumps(payload, allow_nan=False)
         check(dict(payload))
+
+
+def test_reports_pass_through_real_strict_hub():
+    from bus import InMemoryHub
+    from bus.hub import envelope_to_dict
+
+    service = make_service()
+    run_sim(service, ZoneNodeSimulator(NODE_POSITIONS), TAG, (1.0, 0.0), [0, 1, 2])
+    reports = service.reports(at(2.5)) + service.reports(at(100))
+    hub = InMemoryHub()
+    count = asyncio.run(publish_reports(hub, reports))
+    assert count == len(reports) > 0
+    assert {topic for topic, _ in hub.history} == {Topic.LOCATION}
+    for topic, envelope in hub.history:
+        envelope_to_dict(topic, envelope)  # validación estricta real
