@@ -69,7 +69,7 @@ reinicios del supervisor).
 | Falta | Efecto |
 |---|---|
 | Webcam / video | `camera: degraded` (el pipeline reintenta con backoff) |
-| Pesos / `ultralytics` | `detector: degraded`; detecciones vacías, el resto sigue |
+| Pesos / `ultralytics` | `detector: degraded` (el mensaje indica ruta, `CONDOR_WEIGHTS` y el asset oficial; nunca se descarga nada); detecciones vacías, el resto sigue |
 | C6 o `tagbridge` | `location: degraded`; se publica `status: "unknown"` (nunca se inventa zona) |
 | JSONL de replay | igual que sin C6 |
 | Plugin (`location`, `identity`, `actuation`, `tagbridge`) | `plugin: "not_installed"`; se usa el simulador |
@@ -88,12 +88,14 @@ Imitan los payloads de los módulos reales (ver `git show origin/<rama>:docs/...
 
 | Simulador | Tópico | `kind` | Forma |
 |---|---|---|---|
-| ubicación | `LOCATION_TOPIC` | `location.estimate` | `location.bus_adapter.to_envelope` (#32) |
-| identidad | `Topic.EVENTS` | `identity.result` | resultado de `faceid.identity` (#36), más `track_ref` |
-| actuador | `Topic.EVENTS` / `Topic.HEALTH` | `ptz.command` / `ptz.health` | `actuation.adapter` (#33) |
+| ubicación | `LOCATION_TOPIC` (`Topic.LOCATION` si existe; si no `Topic.HEALTH`) | `location.estimate` | `location.bus_adapter.to_envelope` (#32) |
+| identidad | `Topic.HEALTH` | `identity.result` | resultado de `faceid.identity` (#36), más `track_ref` |
+| actuador | `Topic.HEALTH` | `ptz.command` / `ptz.health` | `actuation.adapter` (#33) |
 
-`LOCATION_TOPIC` es `Topic.LOCATION` cuando #32 esté en `main` y `Topic.EVENTS`
-mientras tanto; el campo `kind` permite distinguirlos en ambos casos. Todos
+`Topic.EVENTS` queda reservado para incidentes reales y decisiones de fusión
+(sin ruido de sensores). Ubicación, identidad y PTZ son telemetría y viajan por
+`Topic.HEALTH` distinguidas por `kind`; `LOCATION_TOPIC` pasa a ser
+`Topic.LOCATION` cuando #32 esté en `main`. Todos
 llevan `"simulated": true`.
 
 ## API estable para otros componentes (observabilidad #42, dashboard)

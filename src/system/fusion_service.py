@@ -76,7 +76,7 @@ class FusionService(PeriodicComponent):
     # -- ciclo de vida --
 
     async def _on_start(self) -> None:
-        topics = {Topic.TRACKS, Topic.EVENTS, LOCATION_TOPIC}
+        topics = {Topic.TRACKS, Topic.HEALTH, LOCATION_TOPIC}
         for topic in sorted(topics, key=lambda t: t.value):
             subscription = self._hub.subscribe(topic)
             self._subscriptions.append(subscription)

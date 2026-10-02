@@ -489,10 +489,23 @@ async def test_el_detector_no_se_cierra_con_una_inferencia_en_curso():
     cfg = dataclasses.replace(fast_config("sim"), shutdown_timeout_s=0.2)
     app = SystemApp(cfg, plugins=no_plugins(), detector=SlowDetector())
     await app.start()
-    assert await asyncio.get_running_loop().run_in_executor(
-        None, entered.wait, 3.0
-    )
+    assert await asyncio.get_running_loop().run_in_executor(None, entered.wait, 3.0)
     await app.stop()
     await asyncio.sleep(1.0)
     assert events.index("close") > events.index("infer-end"), events
     assert events.count("infer-start") == 1, events
+
+
+async def test_telemetria_simulada_no_ensucia_events():
+    """Ubicación, identidad y PTZ no viajan por EVENTS (solo incidentes y decisiones)."""
+    app = SystemApp(fast_config("sim"), plugins=no_plugins())
+    await app.start()
+    await wait_for(lambda: topic_count(app, Topic.EVENTS) > 2)
+    await asyncio.sleep(0.3)
+    await app.stop()
+    kinds_events = {
+        m.payload.get("kind") for t, m in app.hub.history if t is Topic.EVENTS
+    }
+    assert not kinds_events & {"location.estimate", "identity.result", "ptz.command"}
+    kinds_all = {m.payload.get("kind") for _, m in app.hub.history}
+    assert {"location.estimate", "identity.result", "ptz.command"} <= kinds_all

@@ -5,11 +5,13 @@ Publican **las mismas formas de payload** que los módulos reales (ubicación de
 hoy, sin depender de código aún no integrado. Solo metadata: JSON estricto, sin
 imágenes ni embeddings.
 
+``Topic.EVENTS`` queda reservado para incidentes reales y decisiones de fusión.
 Mientras ``Topic.LOCATION`` (#32) no exista en ``main``, las estimaciones de
-ubicación y los resultados de identidad viajan por ``Topic.EVENTS`` con un
-campo ``kind`` que los distingue (``location.estimate`` / ``identity.result``).
-Cuando #32 se integre, ``LOCATION_TOPIC`` pasa a ser ``Topic.LOCATION`` sin
-tocar nada más.
+ubicación, los resultados de identidad y los comandos/salud PTZ viajan por
+``Topic.HEALTH`` (telemetría de sensores) con un campo ``kind`` que los
+distingue (``location.estimate``, ``identity.result``, ``ptz.command``,
+``ptz.health``). Cuando #32 se integre, ``LOCATION_TOPIC`` pasa a ser
+``Topic.LOCATION`` sin tocar nada más.
 """
 
 from __future__ import annotations
@@ -29,11 +31,11 @@ from .config import SystemConfig
 
 logger = logging.getLogger(__name__)
 
-LOCATION_TOPIC: Topic = getattr(Topic, "LOCATION", Topic.EVENTS)
+LOCATION_TOPIC: Topic = getattr(Topic, "LOCATION", Topic.HEALTH)
 """Tópico de las estimaciones de ubicación (``Topic.LOCATION`` si ya existe)."""
 
-IDENTITY_TOPIC: Topic = Topic.EVENTS
-"""Los resultados de identidad aún no tienen tópico propio: usan ``EVENTS``."""
+IDENTITY_TOPIC: Topic = Topic.HEALTH
+"""Identidad y PTZ son telemetría de sensores, no incidentes: no van por ``EVENTS``."""
 
 LOCATION_KIND = "location.estimate"
 IDENTITY_KIND = "identity.result"
@@ -497,7 +499,7 @@ class ActuatorSimulator(PeriodicComponent):
         pan = 30.0 * math.sin(self._seq / 5.0)
         tilt = 10.0 * math.cos(self._seq / 7.0)
         await self._publish(
-            Topic.EVENTS,
+            Topic.HEALTH,
             "actuation",
             ptz_command_payload(
                 self._camera, seq=self._seq, pan=pan, tilt=tilt, speed=20.0

@@ -234,7 +234,7 @@ async def test_actuator_simulator_publica_comandos_y_salud():
     hub = InMemoryHub()
     sim = ActuatorSimulator(hub, cfg)
     await sim.start()
-    events = asyncio.create_task(collect(hub, Topic.EVENTS, 0.3))
+    events = asyncio.create_task(collect(hub, Topic.HEALTH, 0.3))
     health = asyncio.create_task(collect(hub, Topic.HEALTH, 0.3))
     await asyncio.sleep(0)
     got_events, got_health = await events, await health
