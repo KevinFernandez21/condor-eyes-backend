@@ -49,6 +49,8 @@ class ReasonCode(StrEnum):
     CLOCK_SKEW = "clock_skew"
     LOW_CONFIDENCE = "low_confidence"
     ZONE_UNKNOWN = "zone_unknown"
+    DUPLICATE_TRACK = "duplicate_track"
+    DUPLICATE_IDENTITY = "duplicate_identity"
 
 
 # Códigos que convierten el resultado en alerta; el resto de códigos de fallo da inconcluso.

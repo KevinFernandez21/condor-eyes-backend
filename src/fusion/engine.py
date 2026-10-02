@@ -92,10 +92,25 @@ class FusionEngine:
         self, evidence: FusionInput, now: datetime
     ) -> tuple[DecisionRecord, ...]:
         """Una decisión por pista, más una por cada tag sin persona visible."""
-        tracks = sorted(evidence.tracks, key=_key)
+        if now.tzinfo is None or now.utcoffset() is None:
+            raise ValueError("now debe incluir zona horaria")
+        all_tracks = sorted(evidence.tracks, key=_key)
         identities = sorted(evidence.identities, key=_key)
         reids = sorted(evidence.reids, key=_key)
         locations = sorted(evidence.locations, key=_key)
+
+        # Una pista por track_ref: se conserva la más reciente. Si las observaciones
+        # discrepan en zona o cámara, no se decide nada con ellas (DUPLICATE_TRACK).
+        by_ref: dict[str, list[TrackObservation]] = {}
+        for t in all_tracks:
+            by_ref.setdefault(t.track_ref, []).append(t)
+        conflicts = {
+            ref: group
+            for ref, group in by_ref.items()
+            if len({(t.zone_id, t.stream_id) for t in group}) > 1
+        }
+        tracks = [g[-1] for ref, g in by_ref.items() if ref not in conflicts]
+        tracks.sort(key=_key)
 
         direct = {
             t.track_ref: self._direct_identity(t, identities, now) for t in tracks
@@ -103,10 +118,36 @@ class FusionEngine:
         resolved = {
             t.track_ref: self._with_reid(t, direct, tracks, reids, now) for t in tracks
         }
+        holders: dict[str, int] = {}
+        for t in tracks:
+            person = direct[t.track_ref].person_id
+            if person is not None:
+                holders[person] = holders.get(person, 0) + 1
+        duplicated = {p for p, n in holders.items() if n > 1}
 
         records = [
-            self._decide_track(t, resolved, tracks, locations, now) for t in tracks
+            self._decide_track(t, resolved, tracks, locations, duplicated, now)
+            for t in tracks
         ]
+        for group in conflicts.values():
+            refs = tuple(
+                EvidenceRef(
+                    t.evidence_id,
+                    EvidenceKind.TRACK,
+                    EvidenceRole.CONFLICTS,
+                    t.observed_at,
+                    t.confidence,
+                    t.stream_id,
+                    t.zone_id,
+                    "observaciones discrepantes",
+                )
+                for t in group
+            )
+            records.append(
+                self._record(
+                    now, group[-1], None, (ReasonCode.DUPLICATE_TRACK,), refs, None
+                )
+            )
         records.extend(self._orphan_tags(tracks, resolved, locations, now))
         return tuple(records)
 
@@ -279,21 +320,13 @@ class FusionEngine:
         now: datetime,
         zone: str,
     ) -> tuple[_Loc, LocationEvidence | None]:
-        """La ubicación utilizable más reciente; si no hay, la más reciente para explicar."""
+        """Se juzga la lectura más reciente: una posterior inválida, de baja confianza,
+        futura o de otra zona degrada a la anterior, que no puede corroborar sola."""
         own = [l for l in locations if l.person_id == person]
         if not own:
             return _Loc.MISSING, None
-        usable = [
-            (state, loc)
-            for loc in own
-            if (state := self._classify_location(loc, track, now, zone))
-            in (_Loc.OK, _Loc.OTHER_ZONE)
-        ]
-        if usable:
-            # Gana la lectura utilizable más reciente; si es de otra zona, hay conflicto.
-            return usable[-1]
-        last = own[-1]
-        return self._classify_location(last, track, now, zone), last
+        latest = own[-1]
+        return self._classify_location(latest, track, now, zone), latest
 
     @staticmethod
     def _loc_ref(loc: LocationEvidence, role: EvidenceRole, detail: str) -> EvidenceRef:
@@ -316,6 +349,7 @@ class FusionEngine:
         resolved: dict[str, _Resolved],
         tracks: Sequence[TrackObservation],
         locations: Sequence[LocationEvidence],
+        duplicated: set[str],
         now: datetime,
     ) -> DecisionRecord:
         def track_ref(role: EvidenceRole, detail: str = "") -> EvidenceRef:
@@ -376,6 +410,8 @@ class FusionEngine:
         person = ident.person_id
 
         if person is not None:
+            if person in duplicated:
+                codes.append(ReasonCode.DUPLICATE_IDENTITY)
             allowed = self._permissions.allowed_zones(person)
             if allowed is None:
                 codes.append(ReasonCode.NO_PERMISSION_RECORD)
@@ -491,18 +527,12 @@ class FusionEngine:
         records = []
         for person in sorted({l.person_id for l in locations}):
             own = [l for l in locations if l.person_id == person]
-            usable = [
-                l
-                for l in own
-                if self._classify_location(l, None, now, l.zone_id) is _Loc.OK
-                and (rule := self._zones.get(l.zone_id)) is not None
-                and rule.restricted
-            ]
-            if not usable:
+            loc = own[-1]  # solo cuenta la lectura más reciente
+            rule = self._zones.get(loc.zone_id)
+            if rule is None or not rule.restricted:
                 continue
-            loc = usable[-1]
-            if loc is not own[-1] and own[-1].observed_at > loc.observed_at:
-                continue  # hay una lectura posterior que no es utilizable: no se afirma nada
+            if self._classify_location(loc, None, now, loc.zone_id) is not _Loc.OK:
+                continue
             present = [
                 t
                 for t in self._fresh_tracks_in_zone(tracks, loc.zone_id, now)

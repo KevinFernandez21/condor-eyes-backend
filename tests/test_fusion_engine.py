@@ -26,6 +26,7 @@ from fusion import (
     TrackObservation,
     ZoneRule,
     identity_from_envelope,
+    reid_from_envelope,
 )
 
 NOW = datetime(2026, 10, 1, 12, 0, 0, tzinfo=UTC)
@@ -532,3 +533,130 @@ def test_nan_config_cannot_make_old_evidence_corroborated():
             max_clock_skew_s=nan,
             time_window_s=nan,
         )
+
+
+# --- revisión: lecturas posteriores, duplicados y entradas defectuosas ------
+
+
+@pytest.mark.parametrize(
+    ("newer", "code"),
+    [
+        (
+            loc(zone=HALL, at=ago(1), valid=False, eid="loc-new"),
+            ReasonCode.LOCATION_INVALID,
+        ),
+        (
+            loc(zone=HALL, at=ago(1), conf=0.1, eid="loc-new"),
+            ReasonCode.LOW_CONFIDENCE,
+        ),
+        (
+            loc(zone=LAB, at=ago(1), valid=False, eid="loc-new"),
+            ReasonCode.LOCATION_INVALID,
+        ),
+        (
+            loc(zone=LAB, at=ago(1), conf=0.1, eid="loc-new"),
+            ReasonCode.LOW_CONFIDENCE,
+        ),
+        (
+            loc(zone=HALL, at=ago(1), eid="loc-new"),
+            ReasonCode.IDENTITY_TAG_MISMATCH,
+        ),
+    ],
+)
+def test_newer_bad_or_conflicting_reading_degrades_corroboration(newer, code):
+    rec = one(
+        make_engine(),
+        FusionInput(
+            tracks=(track(),),
+            identities=(ident(),),
+            locations=(loc(at=ago(5), eid="loc-old"), newer),
+        ),
+    )
+    assert rec.outcome is not DecisionOutcome.CORROBORATED
+    assert code in rec.reason_codes
+    assert "loc-new" in {r.evidence_id for r in rec.evidence}
+
+
+def test_same_track_ref_with_same_zone_keeps_latest_single_record():
+    records = make_engine().evaluate(
+        FusionInput(
+            tracks=(track(eid="old", at=ago(2)), track(eid="new", at=ago(1))),
+            identities=(ident(),),
+            locations=(loc(),),
+        ),
+        NOW,
+    )
+    assert len(records) == 1
+    assert "new" in {r.evidence_id for r in records[0].evidence}
+
+
+def test_same_track_ref_in_different_zones_is_inconclusive():
+    records = make_engine().evaluate(
+        FusionInput(
+            tracks=(track(eid="a", zone=LAB), track(eid="b", zone=HALL)),
+            identities=(ident(),),
+            locations=(loc(),),
+        ),
+        NOW,
+    )
+    recs = [r for r in records if r.track_ref == "cam1/1"]
+    assert len(recs) == 1
+    assert recs[0].outcome is DecisionOutcome.INCONCLUSIVE
+    assert ReasonCode.DUPLICATE_TRACK in recs[0].reason_codes
+
+
+def test_same_person_on_two_tracks_is_not_corroborated():
+    records = make_engine().evaluate(
+        FusionInput(
+            tracks=(track("cam1/1"), track("cam1/2")),
+            identities=(ident("cam1/1"), ident("cam1/2")),
+            locations=(loc(),),
+        ),
+        NOW,
+    )
+    assert len(records) == 2
+    for rec in records:
+        assert rec.outcome is DecisionOutcome.INCONCLUSIVE
+        assert ReasonCode.DUPLICATE_IDENTITY in rec.reason_codes
+
+
+def test_naive_now_gives_clear_error():
+    with pytest.raises(ValueError, match="zona horaria"):
+        make_engine().evaluate(FusionInput(), NOW.replace(tzinfo=None))
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        {},
+        {"status": "match", "person_id": "alice", "score": "abc"},
+        {"status": "match", "person_id": "alice", "score": float("nan")},
+        {"status": "match", "person_id": "alice", "score": 7},
+        {"status": "nonsense"},
+    ],
+)
+def test_identity_adapter_returns_invalid_input_instead_of_raising(payload):
+    env = MetadataEnvelope(source="identity", payload=payload, created_at=FRESH)
+    ev = identity_from_envelope("env-1", "cam1/1", env)
+    assert ev.status is IdentityStatus.INVALID_INPUT and ev.person_id is None
+    assert ev.score == 0.0 and ev.evidence_id == "env-1"
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        {},
+        {
+            "status": "linked",
+            "source_track": "a",
+            "candidate_track": "b",
+            "confidence": float("nan"),
+        },
+        {"status": "linked", "candidate_track": "b", "confidence": 0.9},
+        {"status": "weird", "source_track": "a"},
+    ],
+)
+def test_reid_adapter_returns_inconclusive_instead_of_raising(payload):
+    env = MetadataEnvelope(source="reid", payload=payload, created_at=FRESH)
+    link = reid_from_envelope("env-2", env)
+    assert link.status is ReidStatus.INCONCLUSIVE and link.confidence == 0.0

@@ -61,7 +61,15 @@ ausente, caducada, inválida o de baja confianza deja el resultado en `inconclus
 | `identity_tag_mismatch` | El tag de la persona identificada está en otra zona | `alert` |
 | `zone_not_permitted` | La persona no tiene permiso para la zona | `alert` |
 | `no_permission_record` | No existe registro de permisos de la persona | `inconclusive` |
+| `duplicate_identity` | La misma persona resulta de rostros `match` en dos o más pistas distintas | `inconclusive` |
+| `duplicate_track` | El mismo `track_ref` llega con zona o cámara distintas; no se decide con ninguna de ellas | `inconclusive` |
 | `face_inconclusive`, `identity_missing`, `stale_identity`, `stale_vision`, `location_invalid`, `clock_skew`, `low_confidence`, `zone_unknown` | Evidencia no utilizable o ambigua | `inconclusive` |
+
+Si el mismo `track_ref` llega varias veces con la misma zona, se conserva la observación
+más reciente (un solo registro). Para el tag **solo cuenta la lectura más reciente** de
+la persona: si es inválida, de baja confianza, futura o de otra zona, degrada el
+resultado (`location_invalid`, `low_confidence`, `clock_skew`, `identity_tag_mismatch`)
+aunque exista una lectura anterior correcta.
 
 Con rostro oculto no se atribuye un tag a una persona aunque haya uno solo en la zona: se
 devuelve `inconclusive` con el tag como contexto para el operador. Un re-ID `linked`
@@ -92,6 +100,11 @@ partida y deben recalibrarse con datos del sitio.
 | `min_location_confidence` | 0.6 | Mínimo de la zona estimada del tag |
 | `min_reid_confidence` | 0.7 | Mínimo para heredar identidad por re-ID |
 | `min_decision_confidence` | 0.6 | Mínimo del conjunto para `corroborated` |
+
+Todos los valores deben ser números finitos: `NaN` e infinitos se rechazan al construir
+`FusionConfig` (y al cargar el TOML), porque desactivarían la caducidad. Los adapters
+convierten payloads defectuosos en evidencia `invalid_input`/`inconclusive` en lugar de
+lanzar, y `evaluate` exige un `now` con zona horaria.
 
 Subir un umbral o acortar una ventana hace al sistema más conservador (más
 `inconclusive`/`alert`); nunca más permisivo.
