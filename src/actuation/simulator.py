@@ -231,13 +231,17 @@ class SimulatedTransport:
             return
         self._node.deliver(frame, self._clock.now() + self._delay())
 
-    def recv(self) -> list[bytes]:
-        now = self._clock.now()
-        for t, ack in self._node.advance_to(now):
+    def pump(self) -> None:
+        """Avanza el nodo hasta el instante actual y encola sus acks en el enlace."""
+        for t, ack in self._node.advance_to(self._clock.now()):
             if not self._lost():
                 heapq.heappush(
                     self._downlink, (t + self._delay(), next(self._order), ack)
                 )
+
+    def recv(self) -> list[bytes]:
+        self.pump()
+        now = self._clock.now()
         ready: list[bytes] = []
         while self._downlink and self._downlink[0][0] <= now:
             ready.append(heapq.heappop(self._downlink)[2])

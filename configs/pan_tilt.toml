@@ -21,8 +21,9 @@ max_speed_dps = 60.0
 # Campo de visión de la cámara: convierte error de imagen normalizado en grados.
 hfov_deg = 90.0
 vfov_deg = 55.0
-# Ganancia proporcional (< 1 evita sobrepaso con la latencia del lazo).
-kp = 0.6
+# Ganancia proporcional. Elegida en simulación (retardo de visión 100 ms,
+# tiempo muerto 50 ms): kp=0.6 sobrepasa ~17 %, kp=0.4 ~4 %. Revalidar en banco.
+kp = 0.4
 # Zona muerta del error normalizado [-1, 1]: por debajo no se mueve.
 deadband = 0.04
 # Suavizado exponencial del error (1.0 = sin suavizado).

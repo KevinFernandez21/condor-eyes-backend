@@ -34,7 +34,7 @@ class ControlConfig:
 
     hfov_deg: float = 90.0
     vfov_deg: float = 55.0
-    kp: float = 0.6
+    kp: float = 0.4
     deadband: float = 0.04
     smoothing_alpha: float = 0.5
     max_speed_dps: float = 45.0

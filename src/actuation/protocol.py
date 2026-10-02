@@ -249,8 +249,8 @@ def decode_ack(frame: bytes) -> Ack:
     try:
         return Ack(
             seq=_int(data, "ack"),
-            status=AckStatus(data.get("st")),
-            state=NodeState(data.get("state")),
+            status=AckStatus(str(data.get("st"))),
+            state=NodeState(str(data.get("state"))),
             pan_deg=_num(data, "pan"),
             tilt_deg=_num(data, "tilt"),
             node_ms=_int(data, "ms"),

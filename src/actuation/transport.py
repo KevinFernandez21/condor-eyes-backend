@@ -38,7 +38,7 @@ class SerialTransport:
         self, port: str, baudrate: int = 115200, max_frame_bytes: int = 256
     ) -> None:
         try:
-            import serial
+            import serial  # type: ignore[import-untyped,import-not-found,unused-ignore]
         except ImportError as exc:
             raise TransportError(
                 "SerialTransport requiere pyserial; instálalo con `uv add pyserial`"
