@@ -257,6 +257,25 @@ def test_every_published_envelope_is_strict_json():
         json.dumps(env.payload, allow_nan=False)
 
 
+def test_envelopes_pass_through_real_strict_hub():
+    import asyncio
+
+    from bus import InMemoryHub
+    from bus.hub import envelope_to_dict
+
+    sim = ClosedLoopSim(ActuationConfig(), lambda t: (30.0, 10.0) if t < 4 else None)
+    hub = InMemoryHub()
+    for _ in range(40):
+        sim.run(0.25)
+        asyncio.run(sim.actuator.publish_to(hub))
+    sim.actuator.emergency_stop()
+    sim.run(1.0)
+    asyncio.run(sim.actuator.publish_to(hub))
+    assert {t for t, _ in hub.history} >= {Topic.EVENTS, Topic.HEALTH}
+    for topic, env in hub.history:
+        envelope_to_dict(topic, env)  # validación estricta real
+
+
 def test_undrained_envelopes_are_bounded():
     act, _tp, clock = make()
     for i in range(5000):
