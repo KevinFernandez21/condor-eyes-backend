@@ -50,6 +50,8 @@ node_watchdog_s = 0.75
 heartbeat_interval_s = 0.25
 estop_retries = 5
 degraded_latency_s = 0.15
+# Cada cuánto se emite la telemetría de salud/métricas por el bus.
+health_report_interval_s = 1.0
 
 [pan_tilt.simulator]
 # Parámetros del simulador determinista. NO son mediciones de hardware.

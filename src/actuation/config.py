@@ -56,6 +56,7 @@ class CommsConfig:
     heartbeat_interval_s: float = 0.25
     estop_retries: int = 5
     degraded_latency_s: float = 0.15
+    health_report_interval_s: float = 1.0
 
 
 @dataclass(frozen=True, slots=True)
@@ -130,6 +131,8 @@ def _validate(cfg: ActuationConfig) -> None:
         raise ValueError("comms_timeout_s debe ser >= ack_timeout_s")
     if com.node_watchdog_s <= com.heartbeat_interval_s:
         raise ValueError("node_watchdog_s debe ser mayor que heartbeat_interval_s")
+    if com.health_report_interval_s <= 0:
+        raise ValueError("health_report_interval_s debe ser positivo")
     if com.estop_retries < 0:
         raise ValueError("estop_retries no puede ser negativo")
     if not 0 <= sim.drop_prob <= 1:

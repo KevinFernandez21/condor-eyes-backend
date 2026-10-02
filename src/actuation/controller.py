@@ -75,6 +75,17 @@ class TrackingController:
         """Último objetivo ordenado (pan, tilt)."""
         return self._cmd
 
+    def resync(self, position: tuple[float, float]) -> None:
+        """Alinea el objetivo ordenado con la posición real tras una interrupción.
+
+        Se usa al liberar un ESTOP o recuperar el enlace: evita ordenar un salto
+        desde un objetivo que la cámara nunca alcanzó.
+        """
+        self._cmd = self._base(position)
+        self._ema = None
+        self._lost_since = None
+        self.last_error = None
+
     def update(
         self,
         observation: TargetObservation | None,

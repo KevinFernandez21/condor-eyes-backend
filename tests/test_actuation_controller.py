@@ -25,7 +25,7 @@ def obs(ex, ey, t):
 
 
 def test_target_inside_deadband_produces_no_motion():
-    cfg, ctl = make(deadband=0.05)
+    _cfg, ctl = make(deadband=0.05)
     for i in range(20):
         d = ctl.update(obs(0.03, -0.02, i * DT), i * DT)
         assert (d.pan_deg, d.tilt_deg) == (0.0, 0.0)
@@ -40,7 +40,7 @@ def test_target_right_pans_positive_and_below_tilts_negative():
 
 
 def test_step_is_rate_limited_per_cycle():
-    cfg, ctl = make(smoothing_alpha=1.0, max_speed_dps=30.0)
+    _cfg, ctl = make(smoothing_alpha=1.0, max_speed_dps=30.0)
     prev = ctl.update(obs(1.0, 0.0, 0.0), 0.0).pan_deg
     assert prev <= 30.0 * DT + 1e-9
     for i in range(1, 30):
