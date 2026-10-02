@@ -17,6 +17,7 @@ from dataclasses import dataclass, field
 
 from .config import ActuationConfig, SimulatorConfig
 from .protocol import (
+    MS_MODULUS,
     Ack,
     AckStatus,
     ClearEstop,
@@ -77,6 +78,7 @@ class SimulatedPanTiltNode:
         self._estop = False
         self._failsafe = False
         self.crc_errors = 0
+        self._boot_t = self._t
 
     # --- estado observable ---
 
@@ -94,6 +96,21 @@ class SimulatedPanTiltNode:
         if self._pending or (self._pan, self._tilt) != self._target:
             return NodeState.MOVING
         return NodeState.IDLE
+
+    def reboot(self) -> None:
+        """Reinicio del nodo (p. ej. brownout): neutro, sin ESTOP, secuencias y ms a cero."""
+        self._physics_to(self._clock.now())
+        self._inbox.clear()
+        self._pending.clear()
+        self._pan = self._lim.neutral_pan_deg
+        self._tilt = self._lim.neutral_tilt_deg
+        self._target = (self._pan, self._tilt)
+        self._speed = 0.0
+        self._last_seq = None
+        self._last_rx = None
+        self._estop = False
+        self._failsafe = False
+        self._boot_t = self._t
 
     # --- entrada / avance ---
 
@@ -149,7 +166,10 @@ class SimulatedPanTiltNode:
         noise = self._sim.noise_std_deg
         pan = self._pan + (self._rng.gauss(0.0, noise) if noise else 0.0)
         tilt = self._tilt + (self._rng.gauss(0.0, noise) if noise else 0.0)
-        return encode_ack(Ack(seq, status, self.state, pan, tilt, int(self._t * 1000)))
+        node_ms = int((self._t - self._boot_t) * 1000) % MS_MODULUS
+        return encode_ack(
+            Ack(seq, status, self.state, pan, tilt, node_ms, last_seq=self._last_seq)
+        )
 
     def _handle(self, frame: bytes) -> bytes | None:
         try:

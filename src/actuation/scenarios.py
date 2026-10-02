@@ -92,6 +92,11 @@ class ClosedLoopSim:
     def link_up(self, value: bool) -> None:
         self._gate.up = value
 
+    def restart_host(self) -> None:
+        """Simula un reinicio del host: adaptador nuevo (seq a 0) sobre el mismo nodo."""
+        self.actuator = PanTiltActuator(self._gate, self.cfg, self.clock)
+        self.actuator.start()
+
     def inject(self, frame: bytes) -> None:
         """Inyecta una trama directamente al nodo (p. ej. para simular un replay)."""
         self._link.send(frame)

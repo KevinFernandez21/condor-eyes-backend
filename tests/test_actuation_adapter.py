@@ -227,7 +227,8 @@ def test_envelopes_carry_only_serializable_metadata_and_label_simulation():
     act.poll()
     envs = act.drain_envelopes()
     topics = {topic for topic, _ in envs}
-    assert Topic.COMMANDS in topics and Topic.HEALTH in topics
+    assert Topic.EVENTS in topics and Topic.HEALTH in topics
+    assert Topic.COMMANDS not in topics
     for _topic, env in envs:
         assert env.source == "actuation" and env.stream_id == "cam-01"
         json.dumps(env.payload)  # serializable, sin frames
@@ -300,3 +301,44 @@ def test_serial_transport_frames_lines(monkeypatch):
     assert tp.recv() == [b"abc", b'{"x":1}*AAAA']
     tp.send(b"hola")
     assert tp._port.written == b"hola\n"
+
+
+def _fake_serial(monkeypatch, chunks):
+    class FakePort:
+        def __init__(self, *a, **k):
+            self.chunks = list(chunks)
+            self.buf = b""
+
+        @property
+        def in_waiting(self):
+            if not self.buf and self.chunks:
+                self.buf = self.chunks.pop(0)
+            return len(self.buf)
+
+        def read(self, n):
+            out, self.buf = self.buf[:n], self.buf[n:]
+            return out
+
+        def write(self, data):
+            pass
+
+        def close(self):
+            pass
+
+    fake = types.ModuleType("serial")
+    fake.Serial = FakePort
+    monkeypatch.setitem(sys.modules, "serial", fake)
+    return SerialTransport("COM3", max_frame_bytes=64)
+
+
+def test_serial_transport_drops_overlong_lines_even_with_newline(monkeypatch):
+    tp = _fake_serial(monkeypatch, [b"A" * 5000 + b"\nok1\n" + b"B" * 70 + b"\nok2\n"])
+    assert tp.recv() == [b"ok1", b"ok2"]
+
+
+def test_serial_transport_discards_tail_of_overflowed_line(monkeypatch):
+    # Basura sin salto de línea que desborda el búfer: su cola no debe
+    # interpretarse como una trama nueva.
+    tp = _fake_serial(monkeypatch, [b"X" * 100, b"YYYY\nok\n"])
+    assert tp.recv() == []
+    assert tp.recv() == [b"ok"]
