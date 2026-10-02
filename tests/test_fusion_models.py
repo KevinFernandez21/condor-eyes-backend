@@ -1,4 +1,5 @@
 """Tests de la configuración y los tipos de entrada de la fusión de evidencia."""
+
 from __future__ import annotations
 
 from datetime import UTC, datetime
@@ -41,7 +42,7 @@ def test_override_and_range_validation():
 
 
 def test_naive_datetimes_are_rejected():
-    naive = datetime(2026, 10, 1, 12, 0, 0)
+    naive = T0.replace(tzinfo=None)
     with pytest.raises(ValueError, match="zona horaria"):
         TrackObservation("e1", "cam1/1", "cam1", "z1", naive, 0.9)
 

@@ -1,4 +1,5 @@
 """Umbrales y ventanas de la fusión de evidencia (ver configs/fusion.toml)."""
+
 from __future__ import annotations
 
 import tomllib
@@ -45,7 +46,9 @@ _POSITIVE_KEYS = (
 )
 
 
-def load_fusion_config(path: str | Path | None = None, **overrides: Any) -> FusionConfig:
+def load_fusion_config(
+    path: str | Path | None = None, **overrides: Any
+) -> FusionConfig:
     """Carga la sección [fusion] de un TOML y aplica los overrides no nulos."""
     data: dict[str, Any] = {}
     if path is not None:

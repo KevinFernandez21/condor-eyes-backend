@@ -3,6 +3,7 @@
 Cada evidencia lleva un `evidence_id` que identifica el mensaje de origen (el que
 el productor publicó por el bus). Es la clave para trazar una decisión hasta su fuente.
 """
+
 from __future__ import annotations
 
 from collections.abc import Mapping
