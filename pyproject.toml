@@ -13,6 +13,11 @@ dependencies = [
     "ultralytics>=8.4.123",
 ]
 
+[project.optional-dependencies]
+cloud = [
+    "google-genai>=2.27.0",
+]
+
 [dependency-groups]
 dev = [
     "mypy>=2.3.1",

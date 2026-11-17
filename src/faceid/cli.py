@@ -7,6 +7,8 @@ import json
 from pathlib import Path
 from typing import Any
 
+from .embedders import GEMINI_MODEL, GEMINI_MODEL_PREVIEW
+
 STORE = "data/faceid/enrolled.json"
 
 
@@ -64,6 +66,36 @@ def cmd_benchmark(a: argparse.Namespace) -> None:
         print(
             f"{emb:>20}: umbral={r['calibration_val']['threshold']} FAR={o['far']:.4f} FRR={o['frr']:.3f} "
             f"inconcluso={o['genuine_inconclusive']:.3f} p50={r['latency']['p50_ms']:.1f} ms"
+        )
+    Path(a.output).parent.mkdir(parents=True, exist_ok=True)
+    Path(a.output).write_text(
+        json.dumps(report, indent=2, ensure_ascii=False), encoding="utf-8"
+    )
+    print(f"Reporte: {a.output}")
+
+
+def cmd_compare_embedders(a: argparse.Namespace) -> None:
+    from .embed_benchmark import run_comparison
+
+    report = run_comparison(
+        a.embedders,
+        Path(a.data),
+        subjects=a.subjects,
+        per_subject=a.per_subject,
+        target_far=a.target_far,
+        gemini_min_interval=a.gemini_min_interval,
+        synthetic_only=a.synthetic_only,
+        gemini_model=a.gemini_model,
+    )
+    for name, r in report["models"].items():
+        if r["status"] != "ejecutado":
+            print(f"{name:>20}: {r['status']} ({r['reason']})")
+            continue
+        t = r["test"]
+        print(
+            f"{name:>20}: umbral={r['calibration_val']['threshold']} FAR={t['far']:.4f} "
+            f"FRR={t['frr']:.3f} p50={r['latency']['p50_single_ms']:.1f} ms "
+            f"coste=${r['cost_estimate_usd']:.4f}"
         )
     Path(a.output).parent.mkdir(parents=True, exist_ok=True)
     Path(a.output).write_text(
@@ -146,6 +178,31 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--target-far", type=float, default=0.001)
     s.add_argument("--output", default="reports/faceid_benchmark.json")
     s.set_defaults(func=cmd_benchmark)
+
+    s = sub.add_parser(
+        "compare-embedders",
+        help="SFace vs Gemini Embedding 2 vs CNN en sujetos disjuntos (Gemini solo con GEMINI_API_KEY)",
+    )
+    s.add_argument("--data", default="data/raw/digiface")
+    s.add_argument("--subjects", type=int, default=400)
+    s.add_argument("--per-subject", type=int, default=12)
+    s.add_argument(
+        "--embedders", nargs="+", default=["sface", "mobilenet_imagenet", "gemini"]
+    )
+    s.add_argument("--target-far", type=float, default=0.001)
+    s.add_argument("--gemini-min-interval", type=float, default=0.0)
+    s.add_argument(
+        "--gemini-model",
+        default=GEMINI_MODEL,
+        help=f"Id del modelo de Gemini (alternativa del SDK: {GEMINI_MODEL_PREVIEW})",
+    )
+    s.add_argument(
+        "--synthetic-only",
+        action="store_true",
+        help="Obligatorio para Gemini: confirma que el conjunto es sintético (DigiFace)",
+    )
+    s.add_argument("--output", default="reports/faceid_embedders.json")
+    s.set_defaults(func=cmd_compare_embedders)
 
     s = sub.add_parser(
         "enroll",

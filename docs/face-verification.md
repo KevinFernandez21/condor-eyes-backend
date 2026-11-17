@@ -80,3 +80,94 @@ uv run python scripts/faceid.py benchmark
    datos del personal que consienta, en las cámaras reales.
 7. **Sesgo:** se debe medir FAR y FRR por grupos demográficos en la validación real.
    DigiFace no permite medirlo de forma fiable.
+
+## Búsqueda por embeddings y comparación con Gemini Embedding 2 (issue #27)
+
+Extiende el módulo anterior sin crear un contrato paralelo: sigue usando `VerifyStatus`,
+`VerificationResult`, las reglas de `EnrollmentStore` y `MetadataEnvelope`.
+
+| Pieza | Archivo |
+|---|---|
+| Protocolo `Embedder` + SFace, CNN genérica y Gemini | `src/faceid/embedders.py` |
+| Índice vectorial (numpy + SQLite), coseno top-k y decisión de conjunto abierto | `src/faceid/vectorstore.py` |
+| Rol `identity`: recorte de cara a `MetadataEnvelope` | `src/faceid/identity.py` |
+| Enrolamiento por webcam | `scripts/face_enroll.py` (lógica en `src/faceid/enroll*.py`) |
+| Benchmark SFace vs Gemini vs CNN | `uv run python scripts/faceid.py compare-embedders` |
+
+### Índice vectorial
+
+- Guarda **solo vectores**, referencia de persona, referencia de consentimiento y caducidad.
+  Sin imágenes. `delete`, `purge_expired` y auditoría JSONL sin datos biométricos, como en #10.
+- **Un índice por embedder** (`data/faceid/index_<model_id>.sqlite`): los vectores de modelos
+  distintos no son comparables. Abrir un índice con otro `model_id` falla.
+- Se guardan todos los vectores de cada persona; la búsqueda devuelve las top-k **personas**
+  (mejor vector de cada una).
+- Decisión abierta: `unknown` si nadie alcanza el umbral; `inconclusive` si el mejor y el
+  segundo están a menos de `margin`; `match` en otro caso. Los umbrales **no se transfieren**
+  entre embedders: se calibran con validación para cada uno.
+
+### Rol `identity`
+
+`IdentityHandler.identify(recorte) -> MetadataEnvelope` (`source="identity"`). El recorte entra
+por el lado del pipeline, nunca por el bus. El payload lleva `status`, `person_id`, `score`,
+`threshold`, `model_id`, `observed_at` (ISO-8601 como texto), `evidence` y
+`requires_operator: true`. Es JSON estricto: solo primitivas finitas (sin numpy, `datetime`
+ni NaN; `json_safe` lo garantiza). Ni imágenes ni embeddings viajan en el envelope.
+Conectarlo al runtime de agentes queda como seguimiento (no se toca `bus/hub.py` ni `agents/`).
+
+### Gemini Embedding 2: reglas de uso (nube)
+
+- Modelo `gemini-embedding-2` (GA abril 2026, documentación oficial). Los ejemplos del SDK
+  instalado usan `gemini-embedding-2-preview`; el id se cambia con `--gemini-model`.
+  **Ninguno está verificado contra el servicio real** hasta ejecutar con una clave.
+- SDK `google-genai` como extra opcional (`uv sync --extra cloud`), importado de forma diferida;
+  si falta, se da un error claro en español. Se usa a 768 dimensiones (rango admitido 128-3072) y se re-normaliza (L2) en local.
+  Precio de pago: 0,00012 USD por imagen; hay nivel gratuito.
+- **Clave solo en la variable de entorno `GEMINI_API_KEY`.** Nunca se escribe en archivos, ni
+  se registra; los mensajes de error la redactan.
+- **Guardia de consentimiento de nube** (`cloud_consent=True`), distinta del consentimiento
+  local. Sin ella, `GeminiEmbedder` lanza `CloudConsentError` antes de codificar o enviar nada;
+  el índice de Gemini rechaza enrolar sin ella; el `IdentityHandler` rechaza un embedder de nube
+  salvo `allow_cloud=True`, porque cada **sonda** también enviaría la cara de un transeúnte.
+- **Nivel gratuito: Google puede usar el contenido enviado para mejorar sus productos**; solo
+  el nivel de pago lo excluye. Por eso solo se envían caras de personas que hayan firmado un
+  consentimiento específico para esta prueba (inicialmente Kevin) y caras sintéticas
+  (DigiFace-1M). El uso en producción de un embedding en la nube para biometría exige nivel de
+  pago o se rechaza; la ruta local sigue siendo la predeterminada.
+- **Benchmark seguro:** `compare-embedders` con Gemini exige `--synthetic-only` y que el
+  directorio lleve el marcador `SYNTHETIC_DIGIFACE.json` (lo crea `faceid download`); si no,
+  se rechaza antes de enviar nada. Los informes solo guardan el nombre del tipo de error.
+- Límites de uso: lotes de 8 imágenes (un `Content` por imagen, para obtener un vector por
+  imagen) y reintentos con espera exponencial ante 429.
+
+### Enrolar con la webcam
+
+```bash
+# Prueba sin cámara, modelos ni red; no escribe nada
+uv run python scripts/face_enroll.py --dry-run --person-id EMP-014 --consent-ref CONS-2026-031
+
+# Local (SFace): captura 5 fotos, guarda solo vectores
+uv run python scripts/face_enroll.py --person-id EMP-014 --consent-ref CONS-2026-031
+
+# Nube (solo con consentimiento específico y GEMINI_API_KEY en el entorno)
+uv run python scripts/face_enroll.py --embedder gemini --cloud-consent --person-id EMP-014 --consent-ref CONS-2026-031
+```
+
+Los fotogramas se procesan en memoria y se descartan; no se escriben a disco.
+
+### Borrado físico y permisos
+
+- El índice abre SQLite con `secure_delete=ON` y trunca el WAL (`wal_checkpoint(TRUNCATE)`)
+  tras cada alta, borrado o purga: los bytes de un vector borrado no quedan en el `.sqlite` ni
+  en el `-wal`. (Copias de seguridad o instantáneas del disco quedan fuera de este control.)
+- Un índice solo se reabre con el mismo `model_id` **y** el mismo valor de `cloud`; así no se
+  salta la guardia de consentimiento de nube.
+- Índice, `-wal`, `-shm` y auditoría se restringen a 0600 (POSIX). En Windows `chmod` solo
+  gestiona el bit de solo lectura (best effort): restringe la carpeta `data/faceid` con ACL de
+  NTFS (`icacls`) al responsable de datos.
+
+### Resultados de la comparación
+
+Ver [`docs/reports/face-embedding-search.md`](reports/face-embedding-search.md). La decisión
+sobre Gemini se mantiene **pendiente** hasta ejecutar el benchmark con clave: solo se adopta
+si iguala o supera a SFace en identidad; si no, se documenta como rechazado con números.
