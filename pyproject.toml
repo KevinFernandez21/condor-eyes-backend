@@ -4,6 +4,8 @@ version = "0.1.0"
 requires-python = ">=3.11"
 dependencies = [
     "agentscope>=2.0.9",
+    "fastapi>=0.142.2",
+    "httpx>=0.28.1",
     "onnx>=1.23.1",
     "onnxruntime>=1.30.0",
     "onnxslim>=0.1.97",
@@ -11,10 +13,18 @@ dependencies = [
     "torch>=2.14.1",
     "torchvision>=0.29.1",
     "ultralytics>=8.4.123",
+    "uvicorn>=0.54.0",
+    "websockets>=17.1",
+]
+
+[project.optional-dependencies]
+observability = [
+    "langfuse>=4.16.0",
 ]
 
 [dependency-groups]
 dev = [
+    "httpx>=0.28.1",
     "mypy>=2.3.1",
     "pytest>=9.1.1",
     "pytest-asyncio>=1.4.0",
@@ -36,3 +46,8 @@ explicit = true
 pythonpath = ["src"]
 testpaths = ["tests"]
 asyncio_mode = "auto"
+
+[[tool.mypy.overrides]]
+# langfuse es un extra opcional: sin él mypy no debe fallar.
+module = ["langfuse", "langfuse.*"]
+ignore_missing_imports = true
