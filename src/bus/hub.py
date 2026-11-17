@@ -40,6 +40,7 @@ class Topic(StrEnum):
     HEALTH = "system.health"
     COMMANDS = "system.commands"
     ERRORS = "system.errors"
+    LOCATION = "location.estimates"
 
 
 class HubError(Exception):
