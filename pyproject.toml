@@ -17,6 +17,11 @@ dependencies = [
     "websockets>=17.1",
 ]
 
+[project.optional-dependencies]
+observability = [
+    "langfuse>=4.16.0",
+]
+
 [dependency-groups]
 dev = [
     "httpx>=0.28.1",
@@ -41,3 +46,8 @@ explicit = true
 pythonpath = ["src"]
 testpaths = ["tests"]
 asyncio_mode = "auto"
+
+[[tool.mypy.overrides]]
+# langfuse es un extra opcional: sin él mypy no debe fallar.
+module = ["langfuse", "langfuse.*"]
+ignore_missing_imports = true

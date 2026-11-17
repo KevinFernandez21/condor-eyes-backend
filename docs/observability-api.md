@@ -57,6 +57,98 @@ Todos `GET`, JSON. `limit` 1..500 (defecto 50); más nuevo primero.
 
 `Envelope` = salida de `envelope_to_dict`: `{topic, source, payload, stream_id, created_at, schema_version, payload_version, event_id, correlation_id, causation_id}`.
 
+## Trazas causales (`/traces`, issue #44)
+
+Responde "por qué se levantó esta alerta": reconstruye la cadena `detecciones → tracks → (identidad / ubicación) → decisión de fusión → evento` con latencia por salto. Vive en `src/tracing/` (`TraceStore`); `ObservabilityCommsHandler` lo registra como oyente del tap, `create_app(view, traces=store)` expone las rutas (con el mismo token que el resto de rutas HTTP).
+
+| Ruta | Respuesta |
+|------|-----------|
+| `/traces?limit` | `{traces: [Resumen]}`, la correlación más reciente primero |
+| `/traces/{correlation_id}` | `Traza` completa; `404` si no existe o ya fue expulsada |
+
+```jsonc
+// Resumen
+{"correlation_id", "started_at", "ended_at", "hops": 3, "topics": ["events", ...],
+ "has_alert": true, "end_to_end_ms": 80.6, "decision_ids": ["dec-0025"],
+ "truncated": false, "clock_anomaly": false}
+
+// Traza = Resumen sin "hops" numérico, más:
+{"hops": [ {"event_id", "correlation_id", "topic", "source", "stream_id",
+            "causation_id", "parent_event_ids": ["..."], "created_at",
+            "hop_latency_ms": 20.35, "since_start_ms": 20.35, "via": "own"|"upstream"} ],
+ "decisions": [ {"event_id", "decision_id", "outcome", "confidence", "reason_codes",
+                 "evidence": [ {"evidence_id", "kind", "role", "resolved": true} ]} ]}
+```
+
+Semántica:
+
+- `hops` va en orden causal: por `created_at` y, a igualdad de marca, el padre siempre antes que el hijo. Cada salto trae `topic`, `source`, `event_id`, `causation_id` y `created_at`; **nunca el payload**.
+- Padres de un salto (`parent_event_ids`): su `causation_id` y, en una decisión de fusión, cada `evidence_id` que el almacén reconoce. `hop_latency_ms` = `created_at` del salto menos el del padre **más reciente**; `null` si es raíz o el padre no está en el almacén. `since_start_ms` = desde el primer salto de la cadena.
+- La traza de una decisión incorpora hacia arriba (`via: "upstream"`) la cadena de cada evidencia resuelta, aunque viva en otra correlación. `resolved: false` = el `evidence_id` no está (nunca llegó o fue expulsado).
+- `has_alert` = hay algún mensaje en `events` en la cadena. `end_to_end_ms` = último `events` menos el primer salto; `null` sin alerta.
+- La latencia sale de `created_at` de los envelopes y supone **un reloj común** entre productores. Si algún salto da negativo, `clock_anomaly: true`. La resolución es la del reloj de pared (en Windows ~15 ms; en Linux/Jetson, microsegundos).
+- Acotado: últimas `max_traces` correlaciones (200, LRU por último mensaje) y `max_hops` saltos por correlación (200, `truncated: true` si se pasa). `system.health` no se indexa: cada latido abriría su propia correlación y expulsaría las cadenas que importan.
+- Solo metadata; se pierde al reiniciar (en memoria). Marcas sin zona horaria se toman como UTC; una marca inválida descarta ese mensaje (contador `TraceStore.skipped`) y nunca provoca un 500.
+- El ordenamiento causal es O(n log n) y los endpoints corren la lectura en un hilo, fuera del loop.
+
+## Langfuse (opcional)
+
+Exporta una traza por decisión a Langfuse **solo si el entorno lo configura**. Sin configuración el sistema corre igual (no se crea ningún cliente).
+
+```bash
+uv sync --extra observability          # instala el SDK (langfuse>=4)
+export LANGFUSE_PUBLIC_KEY=pk-lf-...   # solo por entorno, nunca en código ni en el repo
+export LANGFUSE_SECRET_KEY=sk-lf-...
+export LANGFUSE_HOST=http://localhost:3000   # obligatorio (o LANGFUSE_BASE_URL)
+```
+
+- **El host es obligatorio a propósito.** El SDK usa Langfuse Cloud por defecto; si faltara, la metadata saldría del sitio sin que nadie lo decidiera. Si falta, queda desactivado.
+- **Autohospedado (recomendado).** Despliegue de Langfuse con Docker Compose: guía oficial en <https://langfuse.com/self-hosting/docker-compose> (no se vendoriza aquí). Mantiene la metadata dentro de la red del sitio.
+- **Langfuse Cloud:** si se apunta a la nube, la metadata filtrada (ver abajo) **sale del sitio** hacia un tercero. Decisión de despliegue, no del código.
+- Verificado contra `langfuse` 4.16.0 (`Langfuse(public_key, secret_key, base_url)`, `create_trace_id(seed=)`, `start_observation(trace_context=, name=, as_type="span", input=, output=, metadata=)`, `.start_observation()` hijo, `.end()`, `flush()`, `shutdown()`). `LANGFUSE_HOST` está marcado como obsoleto en ese SDK en favor de `LANGFUSE_BASE_URL`; se aceptan ambos.
+
+### Qué se traza (y qué no: estado real de los agentes)
+
+`event` y `supervisor` son hoy **manejadores de reglas** (`agents.handlers`); su ruta declara `AgentKind.REACT`, pero **no hay ningún `ReActAgent` con LLM instanciado**. No se inventan generaciones ni tool calls. Se trazan como spans de decisión por reglas:
+
+| Traza | Cuándo | Contenido |
+|-------|--------|-----------|
+| `fusion.decision` | mensaje en `events` con `decision_id` | `input.chain` = saltos causales; `output` = resultado filtrado + `end_to_end_ms`; un span hijo `evidence.<kind>` por referencia |
+| `event.rule` | otro mensaje en `events` con `source="event"` | ídem, `metadata.decision_engine="rules"`, `llm=false` |
+| `supervisor.command` | comando en `system.commands` con `source="supervisor"` | ídem |
+
+`trace_id` determinista (`create_trace_id(seed=<event_id filtrado>)`) y el tracer recuerda los últimos 4096 `event_id` exportados: una reentrega del mismo mensaje **no** se exporta de nuevo (sin spans duplicados). Cuando existan agentes ReAct, sus llamadas al modelo se enchufarán como observaciones `generation` hijas del span de decisión (pendiente).
+
+Al apagar, `flush()`/`shutdown()` del SDK corren en un hilo con tope (`close_timeout`, 3 s): con el host de Langfuse inalcanzable no congelan el loop del runtime; si vence el tope se registra una advertencia y se pueden perder trazas pendientes (el hilo sigue hasta que el SDK desista).
+
+### Filtro de privacidad (`src/tracing/privacy.py`)
+
+*Deny-by-default*, **sin intentar reconocer ids "seguros" de forma libre** (cualquier formato permitido acaba siendo un canal de datos). Lo no nombrado se descarta y solo se **cuenta** (`redacted_fields`, número, sin contenido). El filtro es *total*: ante tipos raros (listas donde va texto, `None`, objetos) descarta y cuenta, no lanza.
+
+| Campo | Regla |
+|-------|-------|
+| `event_id`, `correlation_id`, `causation_id`, `decision_id`, `evidence_id`, `track_ref`, `person_id`, padres de un salto | **siempre HMAC** `h-<16 hex>`, sin excepciones. El id crudo vive solo en el `TraceStore` local / API, nunca se exporta |
+| `stream_id`, `zone_id`, `source` | HMAC salvo allowlist explícita: `PrivacyFilter(allowed_streams=, allowed_zones=, allowed_sources=)` o `TRACING_ALLOWED_STREAMS` / `TRACING_ALLOWED_ZONES` / `TRACING_ALLOWED_SOURCES` (coma). Por defecto solo pasan como `source` los roles de agente, `fusion`, `runtime` y `hub` |
+| `type` | `events.model.EventType` |
+| `action` | `restart` |
+| `target`, `role` | roles de `agents.route.MULTIAGENT_ROUTE` (un test comprueba que coinciden) |
+| `state` | `WorkerState`, `StreamState`, `up`, `down` |
+| `stage` | `handle`, `consume`, `heartbeat`, `queue_overflow` |
+| `status` | `IdentityStatus`, `ReidStatus` |
+| `error_type` | excepciones de `builtins` y los errores del bus |
+| `outcome`, `reason_codes`, `kind`, `evidence[].role` | `DecisionOutcome`, `ReasonCode`, `EvidenceKind`, `EvidenceRole` |
+| `confidence` | número finito en [0, 1] |
+| `evaluated_at`, `observed_at`, `created_at` | ISO 8601 válida, sin espacios ni saltos de línea sobrantes |
+| `detections`, `tracks` | solo `<campo>_count`; otras listas de objetos se descartan |
+
+Los vocabularios se construyen a partir de los valores que el proyecto emite; un valor nuevo hay que añadirlo allí (si no, se descarta y se cuenta). Embeddings, imágenes, recortes de rostro, tag IDs crudos, nombres, cajas y `detail` no están en ninguna regla. La cadena `input.chain` y la semilla del `trace_id` también salen hasheadas (`PrivacyFilter.hop`).
+
+HMAC = SHA-256 con clave **local**: `TRACING_HASH_KEY` (mínimo 16 bytes; más corta falla al arrancar con `PrivacyConfigError`, antes de crear el cliente de Langfuse) o, si falta, una aleatoria por proceso (los hashes no son estables entre reinicios). Con la misma clave el mismo valor da el mismo hash, así que las relaciones entre saltos se conservan en Langfuse. Un hash no es anonimato frente a quien tenga la clave: no se envía a Langfuse. El proyecto no tiene seudonimizador propio, por eso no se confía en ningún "formato de seudónimo".
+
+El `TraceStore` acota lo que guarda: ids de más de 128 caracteres se sustituyen por un digest (siguen enlazando), y los resúmenes de decisión llevan como máximo 32 evidencias y 32 códigos.
+
+Cubierto por `tests/test_tracing_privacy.py` y `tests/test_tracing_langfuse.py` (payloads hostiles: floats en `reason_codes`, PNG base64 y texto libre en las etiquetas, `Data:`, ids hex-email, `restart/JohnSmith/Madrid`, `dec-1/JohnSmith/...`, `\n` final, `employee-4411` como cámara/zona/source, tipos raros, NaN/inf; también con el SDK real y un exportador en memoria).
+
 ## WebSocket `/ws`
 
 Query: `topics=events,system.health` (coma; defecto: todos; tópico inválido: cierre `1008`), `stream_id=cam-1`, `token=...` (ver Seguridad; preferir cabecera o subprotocolo).
@@ -86,5 +178,7 @@ Arranca un `AgentRuntime` con `InMemoryHub`, un publicador sintético (2 cámara
 ## Pendiente
 
 - Integrar con `SystemApp` del runner (#41) implementando `SystemView` allí o pasando `runtime`.
-- Dashboard (#43) consume estos esquemas.
+- Dashboard (#43) consume estos esquemas (incluida la vista de trazas).
+- Langfuse no ejecutado contra un servidor real (sin claves en la máquina de desarrollo); probado con el SDK y un exportador en memoria.
+- Generaciones LLM de los agentes ReAct `event`/`supervisor`, cuando existan.
 - Endpoint de vista previa en el pipeline (aparte).
