@@ -74,6 +74,7 @@ garantías y diagrama de secuencia en [agentscope-runtime.md](agentscope-runtime
 | ARCH-007 | Decidido | Precisión: FP16 en todos los modelos (detector, re-ID, YuNet, SFace); INT8 solo con calibración documentada; FP32 prohibido en producción; única excepción registrada: la herramienta de evaluación de #10 en la laptop (OpenCV DNN FP32), no producción (SFace FP16 equivale a FP32: coseno ≥ 0,9998) |
 | ARCH-008 | Decidido | Entrada del detector 640 por defecto en multistream; 1280 solo con N ≤ 2 cámaras |
 | ARCH-009 | Pendiente | Validar el presupuesto de #23 en la Jetson con TensorRT FP16 + NVDEC (checklist en `docs/edge-budget.md`) |
+| ARCH-011 | Decidido | Dashboard (#43): una página estática (HTML/CSS/JS sin dependencias ni CDN) servida por FastAPI, con la lógica de vista en Python (`src/dashboard/viewmodel.py`). Se descartó NiceGUI 3.17.1: en esta laptop Windows `import nicegui` falla porque `aiohttp` crea un contexto SSL al importarse y el almacén de certificados tiene uno inválido (`ssl.SSLError: INVALID_CERTIFICATE`); además añade aiohttp/socketio/engineio. Ver `docs/dashboard.md` |
 
 ## 6. Alternativas descartadas
 

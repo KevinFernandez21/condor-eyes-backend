@@ -1,0 +1,126 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="dark">
+  <title>Condor Eye · Sistema</title>
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand"><span class="logo" aria-hidden="true"></span><strong>Condor Eye</strong></div>
+    <nav class="tabs" role="tablist" aria-label="Vistas">
+      <button class="tab" role="tab" id="tab-agents" data-view="agents" aria-controls="view-agents">Agentes</button>
+      <button class="tab" role="tab" id="tab-cams" data-view="cams" aria-controls="view-cams">Multicámara</button>
+    </nav>
+    <div class="pills" id="pills" aria-live="polite"></div>
+  </header>
+  <div id="banner" class="banner" role="alert" hidden></div>
+
+  <!-- ===================== Vista: Agentes ===================== -->
+  <main id="view-agents" class="view" role="tabpanel" aria-labelledby="tab-agents" hidden>
+    <section class="panel" aria-labelledby="h-health">
+      <h2 id="h-health">Salud del sistema</h2>
+      <div id="health" class="kpis"></div>
+      <div id="streams"></div>
+    </section>
+
+    <section class="panel" aria-labelledby="h-comp">
+      <h2 id="h-comp">Componentes</h2>
+      <div id="components" class="comp-strip"></div>
+    </section>
+
+    <div class="cols">
+      <section class="panel wide" aria-labelledby="h-graph">
+        <div class="panel-head">
+          <h2 id="h-graph">Grafo de agentes</h2>
+          <label class="switch"><input type="checkbox" id="show-control"><span>Mostrar control</span></label>
+        </div>
+        <div class="graph-scroll"><svg id="graph" role="img" aria-label="Grafo de agentes y tópicos"></svg></div>
+        <div class="legend" id="legend"></div>
+        <details class="topics">
+          <summary>Tópicos (<span id="topics-count">0</span>)</summary>
+          <div class="table-wrap"><table id="edges"><thead><tr>
+            <th>Tópico</th><th>Origen → destino</th><th class="num">msg/s</th><th class="num">descartes</th>
+          </tr></thead><tbody></tbody></table></div>
+        </details>
+      </section>
+
+      <section class="panel" aria-labelledby="h-alerts">
+        <h2 id="h-alerts">Alertas de fusión</h2>
+        <div id="alerts" class="stack"></div>
+      </section>
+    </div>
+
+    <div class="cols">
+      <section class="panel wide" aria-labelledby="h-feed">
+        <h2 id="h-feed">Mensajes en vivo</h2>
+        <div class="filters">
+          <div id="topic-chips" class="chips" role="group" aria-label="Filtrar por tópico"></div>
+          <input id="feed-q" type="search" placeholder="Buscar en el resumen…" aria-label="Buscar en el feed">
+          <button id="corr-clear" class="chip" type="button" hidden></button>
+        </div>
+        <ol id="feed" class="feed"></ol>
+      </section>
+      <section class="panel" aria-labelledby="h-site">
+        <h2 id="h-site">Mapa de sitio</h2>
+        <div id="site"></div>
+      </section>
+    </div>
+  </main>
+
+  <!-- ===================== Vista: Multicámara ===================== -->
+  <main id="view-cams" class="view vms" role="tabpanel" aria-labelledby="tab-cams" hidden>
+    <div class="toolbar">
+      <div class="chipset" role="group" aria-label="Estado"><span class="chipset-title">Estado</span><span id="f-state"></span></div>
+      <div class="chipset" role="group" aria-label="Zonas"><span class="chipset-title">Zonas</span><span id="f-zone"></span></div>
+      <div class="chipset" role="group" aria-label="Alertas"><span class="chipset-title">Alertas</span><span id="f-alert"></span></div>
+      <span class="spacer"></span>
+      <div class="seg" id="layout" role="group" aria-label="Distribución">
+        <button type="button" data-n="1" aria-pressed="false">1×1</button>
+        <button type="button" data-n="2" aria-pressed="true">2×2</button>
+        <button type="button" data-n="3" aria-pressed="false">3×3</button>
+      </div>
+      <label class="switch"><input type="checkbox" id="review-toggle"><span>Revisión aleatoria</span></label>
+      <label class="switch live"><input type="checkbox" id="live-toggle" checked><span>En vivo</span></label>
+    </div>
+
+    <div class="vms-body">
+      <section class="grid-wrap" aria-label="Cámaras">
+        <div id="cam-grid" class="cam-grid"></div>
+        <div id="pager" class="pager" hidden></div>
+        <p class="mock-note">Maqueta: las escenas son sintéticas. Las cajas salen de la metadata de detección; no hay video. La cámara real requiere un endpoint de instantáneas/MJPEG del lado del pipeline.</p>
+      </section>
+      <section class="timeline panel" aria-labelledby="h-timeline">
+        <div class="panel-head">
+          <h2 id="h-timeline">Línea de tiempo</h2>
+          <div class="tl-controls">
+            <select id="tl-camera" aria-label="Cámara de la línea de tiempo"></select>
+            <select id="tl-window" aria-label="Ventana">
+              <option value="15">15 min</option><option value="30">30 min</option>
+              <option value="60" selected>60 min</option>
+            </select>
+            <span id="tl-readout" class="readout" aria-live="polite">Ahora</span>
+          </div>
+        </div>
+        <div class="tl-scroll"><svg id="tl" role="img" aria-label="Línea de tiempo de detecciones por clase"></svg></div>
+      </section>
+      <aside class="reviews panel" aria-labelledby="h-reviews">
+        <h2 id="h-reviews">Revisiones</h2>
+        <ol id="review-log" class="review-log"></ol>
+        <p id="review-empty" class="small">Activa «Revisión aleatoria» para registrar comprobaciones.</p>
+      </aside>
+    </div>
+
+  </main>
+
+  <div id="toasts" class="toasts" aria-live="polite"></div>
+  <footer class="foot">Solo metadata. Las identidades se muestran tal como llegan (seudonimizadas); no se renderizan imágenes ni embeddings.</footer>
+
+  <script src="/static/common.js"></script>
+  <script src="/static/agents.js"></script>
+  <script src="/static/cameras.js"></script>
+  <script src="/static/app.js"></script>
+</body>
+</html>
